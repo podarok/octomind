@@ -92,6 +92,8 @@ pub async fn handle_role(
 	let old_role = session.role.clone();
 	let old_model = session.model.clone();
 	let old_temperature = session.temperature;
+	let old_max_tokens = session.max_tokens;
+	let old_reasoning_effort = session.reasoning_effort;
 	let old_config = config.clone();
 
 	// Resolve the target role. For tap tags this fetches the manifest, resolves
@@ -149,6 +151,12 @@ pub async fn handle_role(
 	if let Some(role_model) = &role_config.model {
 		session.model = role_model.clone();
 	}
+	if let Some(role_max_tokens) = role_config.max_tokens {
+		session.max_tokens = role_max_tokens;
+	}
+	if let Some(role_reasoning_effort) = role_config.reasoning_effort {
+		session.reasoning_effort = Some(role_reasoning_effort);
+	}
 
 	// Reinitialize for the new role: restart MCP servers, rebuild system prompt.
 	if let Err(e) = session.reinitialize_for_role(&target_role, config).await {
@@ -156,6 +164,8 @@ pub async fn handle_role(
 		session.role = old_role.clone();
 		session.model = old_model;
 		session.temperature = old_temperature;
+		session.max_tokens = old_max_tokens;
+		session.reasoning_effort = old_reasoning_effort;
 		crate::config::set_thread_role(&session.role);
 		*config = old_config;
 

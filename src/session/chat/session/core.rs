@@ -513,13 +513,21 @@ impl ChatSession {
 		let effective_top_p = role_config.top_p;
 		let effective_top_k = role_config.top_k;
 
-		// Get max_tokens from root config if not provided via command line
-		let effective_max_tokens = if let Some(tokens) = params.max_tokens {
-			tokens // Use command line override
-		} else {
-			// Read from root configuration - STRICT: assume it exists
-			params.config.get_effective_max_tokens()
-		};
+		// Get max_tokens: CLI --max-tokens > role.max_tokens > config.max_tokens
+		// (same override chain as effective_model above)
+		let effective_max_tokens = params
+			.max_tokens
+			.or(role_config.max_tokens)
+			.unwrap_or_else(|| params.config.get_effective_max_tokens());
+
+		// Role-level reasoning_effort override, if set. `None` here still falls
+		// back to the root `config.reasoning_effort` at request-build time
+		// (see `providers.rs`'s `self.reasoning_effort.unwrap_or(self.config.reasoning_effort)`).
+		// Lets a role paired with a reasoning-capable model (e.g. a `local:`
+		// model whose server only honors a binary on/off knob) turn reasoning
+		// off for fast/simple roles without a system-wide setting affecting
+		// every other role.
+		let effective_reasoning_effort = role_config.reasoning_effort;
 
 		// Check if we should load or create a session
 		let should_resume = if effective_resume.is_some() {
@@ -649,7 +657,7 @@ impl ChatSession {
 						injected_lessons: std::collections::HashSet::new(),
 						pending_recall: false,
 						learning_extracted: false,
-						reasoning_effort: None,
+						reasoning_effort: effective_reasoning_effort,
 						last_self_report: None,
 						detectors: crate::supervisor::detect::Detectors::default(),
 						gate_iterations: 0,
@@ -695,6 +703,9 @@ impl ChatSession {
 							chat_session.temperature = role_config.temperature;
 							if let Some(role_model) = role_config.model.clone() {
 								chat_session.model = role_model;
+							}
+							if let Some(role_max_tokens) = role_config.max_tokens {
+								chat_session.max_tokens = role_max_tokens;
 							}
 						}
 					}
@@ -803,6 +814,7 @@ impl ChatSession {
 						config: params.config,
 						role: params.role, // Add role parameter
 					});
+					chat_session.reasoning_effort = effective_reasoning_effort;
 					chat_session.session.session_file = Some(new_session_file);
 
 					Ok(chat_session)
@@ -833,6 +845,7 @@ impl ChatSession {
 				config: params.config,
 				role: params.role,
 			});
+			chat_session.reasoning_effort = effective_reasoning_effort;
 			chat_session.session.session_file = Some(session_file);
 
 			Ok(chat_session)

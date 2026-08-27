@@ -244,41 +244,56 @@ pub struct SkillsConfig {
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffortConfig {
+	// Explicit "reasoning disabled" — distinct from `Low`. Some local
+	// OpenAI-compat servers (e.g. LM Studio on certain checkpoints) expose
+	// only a binary on/off reasoning knob and fall back to "on" for any
+	// graded value they don't recognize, so `Low` alone cannot reliably turn
+	// reasoning off there.
+	Off,
 	Low,
 	Medium,
 	High,
 	XHigh,
 	Max,
+	// Explicit "reasoning enabled, provider picks depth" — the on/off
+	// counterpart to `Off` for providers with only a binary knob.
+	On,
 }
 
 impl ReasoningEffortConfig {
 	pub fn to_octolib(self) -> octolib::llm::ReasoningEffort {
 		match self {
+			ReasoningEffortConfig::Off => octolib::llm::ReasoningEffort::Off,
 			ReasoningEffortConfig::Low => octolib::llm::ReasoningEffort::Low,
 			ReasoningEffortConfig::Medium => octolib::llm::ReasoningEffort::Medium,
 			ReasoningEffortConfig::High => octolib::llm::ReasoningEffort::High,
 			ReasoningEffortConfig::XHigh => octolib::llm::ReasoningEffort::XHigh,
 			ReasoningEffortConfig::Max => octolib::llm::ReasoningEffort::Max,
+			ReasoningEffortConfig::On => octolib::llm::ReasoningEffort::On,
 		}
 	}
 
 	pub fn as_str(self) -> &'static str {
 		match self {
+			ReasoningEffortConfig::Off => "off",
 			ReasoningEffortConfig::Low => "low",
 			ReasoningEffortConfig::Medium => "medium",
 			ReasoningEffortConfig::High => "high",
 			ReasoningEffortConfig::XHigh => "xhigh",
 			ReasoningEffortConfig::Max => "max",
+			ReasoningEffortConfig::On => "on",
 		}
 	}
 
 	pub fn parse(s: &str) -> Option<Self> {
 		match s.trim().to_ascii_lowercase().as_str() {
+			"off" | "disabled" | "none" => Some(ReasoningEffortConfig::Off),
 			"low" => Some(ReasoningEffortConfig::Low),
 			"medium" | "med" => Some(ReasoningEffortConfig::Medium),
 			"high" => Some(ReasoningEffortConfig::High),
 			"xhigh" | "x-high" | "extra-high" => Some(ReasoningEffortConfig::XHigh),
 			"max" | "maximum" => Some(ReasoningEffortConfig::Max),
+			"on" | "enabled" => Some(ReasoningEffortConfig::On),
 			_ => None,
 		}
 	}

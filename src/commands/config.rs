@@ -15,7 +15,9 @@
 use clap::Args;
 use colored::Colorize;
 
-use octomind::config::{Config, McpConnectionType, McpServerConfig, DEFAULT_MCP_TIMEOUT_SECONDS};
+use octomind::config::{
+	Config, McpConnectionType, McpServerConfig, RoleConfig, DEFAULT_MCP_TIMEOUT_SECONDS,
+};
 use octomind::directories;
 use octomind::session::chat::{
 	block_close_err, block_close_ok, block_line, block_open, block_row, block_row_text,
@@ -674,18 +676,31 @@ fn show_configuration(config: &Config) -> Result<(), anyhow::Error> {
 	render_octomind_cloud_row();
 
 	// ── roles ─────────────────────────────────────────────────────────
-	let (_dev_config, dev_mcp, _dev_layers, _dev_commands, dev_system) =
+	let (dev_config, dev_mcp, _dev_layers, _dev_commands, dev_system) =
 		config.get_role_config("developer");
-	let (_ass_config, ass_mcp, _ass_layers, _ass_commands, ass_system) =
+	let (ass_config, ass_mcp, _ass_layers, _ass_commands, ass_system) =
 		config.get_role_config("assistant");
+
+	// A role's own `model` (if set) wins over the root config model — mirror
+	// the real resolution order (CLI --model > role.model > config.model)
+	// instead of always printing the root model for every role.
+	let role_model_label = |role_config: &RoleConfig| -> (String, &'static str) {
+		match &role_config.model {
+			Some(m) => (m.clone(), "role override"),
+			None => (config.get_effective_model(), "system-wide"),
+		}
+	};
+	let (dev_model, dev_model_source) = role_model_label(dev_config);
+	let (ass_model, ass_model_source) = role_model_label(ass_config);
 
 	block_section("roles");
 	let role_kw = key_width(["developer", "assistant"]);
 	block_row(
 		"developer",
 		&format!(
-			"{} (system-wide) {} {} char prompt",
-			config.get_effective_model(),
+			"{} ({}) {} {} char prompt",
+			dev_model,
+			dev_model_source,
 			"·".bright_black(),
 			dev_system.len()
 		),
@@ -694,8 +709,9 @@ fn show_configuration(config: &Config) -> Result<(), anyhow::Error> {
 	block_row(
 		"assistant",
 		&format!(
-			"{} (system-wide) {} {} char prompt",
-			config.get_effective_model(),
+			"{} ({}) {} {} char prompt",
+			ass_model,
+			ass_model_source,
 			"·".bright_black(),
 			ass_system.len()
 		),

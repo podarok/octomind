@@ -217,9 +217,13 @@ pub async fn setup_and_initialize_session(
 	let effective_temperature = temperature.unwrap_or(role_config.temperature);
 	session_params = session_params.with_temperature(effective_temperature);
 
-	// Use CLI max_tokens if provided, otherwise use config default
-	let effective_max_tokens =
-		max_tokens.unwrap_or_else(|| config_for_role.get_effective_max_tokens());
+	// Use CLI max_tokens if provided, then role.max_tokens, otherwise root config
+	// default. `get_merged_config_for_role` does not copy role-level fields onto
+	// the merged `Config`, so `config_for_role.get_effective_max_tokens()` alone
+	// always returns the root value — role.max_tokens must be checked here too.
+	let effective_max_tokens = max_tokens
+		.or(role_config.max_tokens)
+		.unwrap_or_else(|| config_for_role.get_effective_max_tokens());
 	session_params = session_params.with_max_tokens(effective_max_tokens);
 
 	// Use CLI max_retries if provided, otherwise use root config max_retries

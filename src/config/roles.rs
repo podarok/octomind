@@ -22,6 +22,17 @@ pub struct RoleConfig {
 	// Optional model override — if set, replaces the global model when this role is active
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub model: Option<String>,
+	// Optional max_tokens override — if set, replaces the global max_tokens when this
+	// role is active. Useful when a role's model has a smaller context window than
+	// the root config's max_tokens (e.g. a small local model mixed with a large one).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub max_tokens: Option<u32>,
+	// Optional reasoning_effort override — if set, replaces the global
+	// reasoning_effort when this role is active. Lets a heavy reasoning-capable
+	// model run with reasoning off for fast/simple roles and on for the roles
+	// that need it, instead of one system-wide setting for every role.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub reasoning_effort: Option<super::ReasoningEffortConfig>,
 	// Custom system prompt (REQUIRED - defined in config template)
 	pub system: String,
 	// Custom welcome message with variable support
