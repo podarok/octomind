@@ -80,17 +80,23 @@ pub async fn get_initial_messages(
 	)
 	.await;
 
-	let welcome_msg = crate::session::Message {
-		role: "assistant".to_string(),
-		content: welcome_message,
-		timestamp: std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.unwrap_or_default()
-			.as_secs(),
-		cached: false,
-		..Default::default()
-	};
-	initial_messages.push(welcome_msg);
+	// Skip entirely when welcome is empty: some local model chat templates
+	// (e.g. stricter Qwen3-VL-derived templates) require the last message in
+	// a fresh conversation to be a real `user` turn and reject a leading
+	// `assistant` message outright, even with empty content.
+	if !welcome_message.trim().is_empty() {
+		let welcome_msg = crate::session::Message {
+			role: "assistant".to_string(),
+			content: welcome_message,
+			timestamp: std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap_or_default()
+				.as_secs(),
+			cached: false,
+			..Default::default()
+		};
+		initial_messages.push(welcome_msg);
+	}
 
 	// 2. Generate instructions message if AGENTS.md exists (user role)
 	let instructions_path = current_dir.join(AGENTS_FILE);

@@ -112,16 +112,22 @@ pub async fn setup_system_prompt_and_cache(
 			)
 			.await;
 
-			chat_session.add_assistant_message(&welcome_message, None, config_for_role, role)?;
+			// Skip entirely when welcome is empty: some local model chat templates
+			// (e.g. stricter Qwen3-VL-derived templates) require the last message in
+			// a fresh conversation to be a real `user` turn and reject a leading
+			// `assistant` message outright, even with empty content.
+			if !welcome_message.trim().is_empty() {
+				chat_session.add_assistant_message(&welcome_message, None, config_for_role, role)?;
 
-			// Apply cache marker to welcome message
-			if supports_caching {
-				let cache_manager = CacheManager::new();
-				cache_manager.add_automatic_cache_markers(
-					&mut chat_session.session.messages,
-					has_tools,
-					supports_caching,
-				);
+				// Apply cache marker to welcome message
+				if supports_caching {
+					let cache_manager = CacheManager::new();
+					cache_manager.add_automatic_cache_markers(
+						&mut chat_session.session.messages,
+						has_tools,
+						supports_caching,
+					);
+				}
 			}
 
 			// Check for AGENTS.md instructions file
