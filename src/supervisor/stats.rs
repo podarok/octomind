@@ -40,6 +40,8 @@ pub enum CallKind {
 	Distill,
 	/// Tool-output condensation (task-aware narrowing).
 	Condense,
+	/// Pre-turn reasoning-depth routing decision.
+	Route,
 }
 
 #[derive(Default, Clone)]
@@ -51,6 +53,7 @@ struct Stats {
 	plan_calls: u64,
 	distill_calls: u64,
 	condense_calls: u64,
+	route_calls: u64,
 	condensed_results: u64,
 	condense_saved_tokens: u64,
 	input_tokens: u64,
@@ -102,6 +105,7 @@ pub fn record_call(
 			CallKind::Plan => s.plan_calls += 1,
 			CallKind::Distill => s.distill_calls += 1,
 			CallKind::Condense => s.condense_calls += 1,
+			CallKind::Route => s.route_calls += 1,
 		}
 		s.input_tokens += input_tokens;
 		s.output_tokens += output_tokens;
@@ -197,6 +201,7 @@ pub fn snapshot() -> Option<serde_json::Value> {
 		"gate_calls": s.gate_calls,
 		"resolve_calls": s.resolve_calls,
 		"plan_calls": s.plan_calls,
+		"route_calls": s.route_calls,
 		"distill_calls": s.distill_calls,
 		"condense_calls": s.condense_calls,
 		"condensed_results": s.condensed_results,

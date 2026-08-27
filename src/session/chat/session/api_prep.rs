@@ -31,6 +31,47 @@ pub async fn prepare_for_api_call(
 		return Err(anyhow::Error::new(crate::session::cancellation::Cancelled));
 	}
 
+	// Pre-turn reasoning-depth routing: once per new genuine user turn, before
+	// resolution/compression/the main call, a cheap model decides whether this
+	// turn needs full reasoning depth and switches model/sampling/reasoning_effort
+	// accordingly. Independent of gate/plan — routing is useful even with both
+	// disabled. See `supervisor::route` for what is and isn't switched.
+	if config.supervisor.enabled
+		&& config.supervisor.route.enabled
+		&& !chat_session.route_done_for_turn
+	{
+		if let Some(request) = crate::session::latest_real_user_task_content(
+			&chat_session.session.messages,
+		) {
+			let request = request.to_string();
+			let decision =
+				crate::supervisor::route::classify(config, &request, operation_rx.clone()).await;
+			let target_role = decision.role_name(&config.supervisor.route);
+			let (role_config, _, _, _, _) = config.get_role_config(&target_role);
+			log_info!(
+				"Route: turn classified {:?} -> role '{}'",
+				decision,
+				target_role
+			);
+			chat_session.temperature = role_config.temperature;
+			chat_session.top_p = role_config.top_p;
+			chat_session.top_k = role_config.top_k;
+			if let Some(role_model) = &role_config.model {
+				chat_session.model = role_model.clone();
+			}
+			if let Some(role_max_tokens) = role_config.max_tokens {
+				chat_session.max_tokens = role_max_tokens;
+			}
+			if let Some(role_reasoning_effort) = role_config.reasoning_effort {
+				chat_session.reasoning_effort = Some(role_reasoning_effort);
+			}
+		}
+		chat_session.route_done_for_turn = true;
+		if *operation_rx.borrow() {
+			return Err(anyhow::Error::new(crate::session::cancellation::Cancelled));
+		}
+	}
+
 	// Resolve each genuine user turn before compression or agent work. The same
 	// cached resolution later serves planning and completion, so this is one
 	// semantic pass, not a second policy classifier. Doing it at turn admission

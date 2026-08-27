@@ -45,6 +45,7 @@ pub mod learning;
 pub mod plan;
 pub mod recite;
 pub mod resolve;
+pub mod route;
 pub mod stats;
 pub mod workdir;
 
@@ -213,6 +214,28 @@ pub struct SupervisorConfig {
 	pub plan: PlanConfig,
 	/// Task-aware condensation of oversized tool outputs.
 	pub condense: CondenseConfig,
+	/// Pre-turn model/role router: a cheap classifier picks how much
+	/// reasoning depth the current request needs before the main call.
+	pub route: RouteConfig,
+}
+
+/// Route: a cheap-model pre-turn classifier that assigns each new real user
+/// turn to one of two roles based on how much reasoning depth it needs, so a
+/// single reasoning-capable model can serve two tiers (e.g. reasoning on for
+/// hard tasks, reasoning off — same weights, faster — for simple ones)
+/// without the operator manually picking a role every time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteConfig {
+	pub enabled: bool,
+	/// Cheap model that makes the routing decision (recommended: your
+	/// smallest/fastest configured model — this runs once per new turn).
+	pub model: String,
+	/// Role to switch to when the turn is classified as simple/routine.
+	pub simple_role: String,
+	/// Role to switch to when the turn is classified as needing full depth.
+	/// Also the fail-open default on any classifier/parse failure — an
+	/// unnecessary reasoning pass costs time, a skipped one costs quality.
+	pub complex_role: String,
 }
 
 /// Condense: task-aware narrowing of oversized tool outputs. When a round

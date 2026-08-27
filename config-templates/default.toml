@@ -722,6 +722,23 @@ tokens_threshold = 5000
 # Model that does the narrowing (cheap + fast recommended).
 model = "anthropic:claude-haiku-4-5"
 
+# Route: a cheap-model pre-turn classifier that assigns each new real user
+# turn to one of two roles by how much reasoning depth it needs, then the
+# runtime switches the active role BEFORE the main model is called for that
+# turn -- so one reasoning-capable model can serve two tiers (reasoning on
+# for hard tasks, reasoning off -- same weights, faster -- for routine ones)
+# without picking a role by hand. Disabled by default: opt in by setting both
+# role names to roles that already exist in your [[roles]].
+# Scope: swaps model/temperature/top_p/top_k/max_tokens/reasoning_effort only
+# -- MCP servers are not restarted, so simple_role and complex_role should
+# share the same tool permissions. Use /role for anything that needs different
+# tools.
+[supervisor.route]
+enabled = false
+model = "octohub:auto"
+simple_role = "assistant"
+complex_role = "assistant"
+
 # MCP backend configuration (uncomment to use instead of file backend):
 # Octobrain example — field_map maps canonical learning fields to the MCP tool's actual arguments.
 # Empty string = omit that field. Missing = omit.

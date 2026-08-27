@@ -278,6 +278,7 @@ impl ChatSession {
 		// only by a later PASS.
 		self.evidence.reset();
 		self.gate_task = None;
+		self.route_done_for_turn = false;
 		self.gate_iterations = 0;
 		self.nudge_iterations = 0;
 		self.last_gate_gaps.clear();

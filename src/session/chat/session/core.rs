@@ -300,6 +300,10 @@ pub struct ChatSession {
 	/// Supervisor: stable turn-start task resolution. Reset on each genuine user
 	/// turn and cached across planning and completion-gate re-runs.
 	pub gate_task: Option<crate::supervisor::resolve::ResolvedTask>,
+	/// Supervisor: whether the pre-turn route classifier already ran for the
+	/// current genuine user turn. Reset alongside `gate_task` so routing runs
+	/// exactly once per turn, not once per API call within a multi-step turn.
+	pub route_done_for_turn: bool,
 }
 
 /// Parameters for creating a new ChatSession
@@ -441,6 +445,7 @@ impl ChatSession {
 			recalled_refs: Vec::new(),
 			evidence: crate::supervisor::gate::EvidenceLedger::default(),
 			gate_task: None,
+			route_done_for_turn: false,
 		}
 	}
 
@@ -678,6 +683,7 @@ impl ChatSession {
 						recalled_refs: Vec::new(),
 						evidence: restored_evidence,
 						gate_task: None,
+						route_done_for_turn: false,
 					};
 					// Keep session.info.role in sync with the active role
 					chat_session.session.info.role = params.role.to_string();
@@ -1458,6 +1464,7 @@ impl ChatSession {
 			recalled_refs: Vec::new(),
 			evidence: crate::supervisor::gate::EvidenceLedger::default(),
 			gate_task: None,
+			route_done_for_turn: false,
 		}
 	}
 }
