@@ -39,6 +39,12 @@ pub async fn prepare_for_api_call(
 	if config.supervisor.enabled
 		&& config.supervisor.route.enabled
 		&& !chat_session.route_done_for_turn
+		// Scope to the two routed roles only. Other roles (task_refiner,
+		// task_researcher, reduce, and every internal supervisor mechanic)
+		// have their own deliberately-chosen model/size for cost and speed —
+		// routing must never hijack them onto simple_role/complex_role.
+		&& (chat_session.role == config.supervisor.route.simple_role
+			|| chat_session.role == config.supervisor.route.complex_role)
 	{
 		if let Some(request) = crate::session::latest_real_user_task_content(
 			&chat_session.session.messages,
