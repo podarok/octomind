@@ -45,7 +45,7 @@ mod schema;
 // Shared with the supervisor: recovery of JSON from a text body when the
 // provider does not enforce a response schema.
 pub(crate) use ai::extract_json_lenient;
-use apply::{apply_compression, collect_preserved_skills};
+use apply::{apply_compression, collect_preserved_skills, collect_recent_recall_context};
 use decision::{
 	adaptive_fire_line, at_turn_boundary, autonomous_runway, ceiling_reached, compression_depth,
 	context_ceiling, expected_remaining_calls, fold_decision, measured_growth_rate, FoldEconomics,
@@ -71,7 +71,7 @@ use anyhow::Result;
 pub async fn should_check_compression(session: &mut ChatSession, config: &Config) -> (bool, f64) {
 	// UNIFIED TOKEN CALCULATION - Use the single source of truth
 	// This ensures consistency with display and all other systems
-	let current_tokens = session.get_full_context_tokens(config).await;
+	let mut current_tokens = session.get_full_context_tokens(config).await;
 
 	if config.compression.threshold == 0 {
 		log_debug!("Compression disabled (compression.threshold = 0)");
@@ -97,10 +97,10 @@ pub async fn should_check_compression(session: &mut ChatSession, config: &Config
 		return (true, MAX_COMPRESSION_RATIO);
 	}
 
-	// ADAPTIVE FIRE LINE: geometric per-turn ladder. Each in-turn fold (or
-	// paid decline) doubles the line — threshold, 2x, 4x… capped under the
-	// ceiling — so a single long turn earns growing room; a genuine user turn
-	// resets it. The runway still paces the amortization gate and fold depth.
+	// ADAPTIVE FIRE LINE: geometric per-turn ladder. Each in-turn fold doubles
+	// the line — threshold, 2x, 4x… capped under the ceiling — so a single long
+	// turn earns growing room; a genuine user turn resets it. The runway still
+	// paces the amortization gate and fold depth.
 	let runway = autonomous_runway(session.session.info.consecutive_compressions);
 	let fire_line = adaptive_fire_line(
 		config.compression.threshold,
@@ -118,6 +118,26 @@ pub async fn should_check_compression(session: &mut ChatSession, config: &Config
 			ceiling
 		);
 		return (false, MIN_COMPRESSION_RATIO);
+	}
+
+	// FREE TIER FIRST: before pricing a paid fold, cut oversized tool bodies to
+	// the response cap — the same rule ingest applies, full body spilled to disk
+	// and still readable. Deterministic and free; when it alone drops the context
+	// back under the line there is no summarize call and no cache invalidation.
+	let trimmed = trim_oversized_tool_results(session, config.mcp_response_tokens_threshold);
+	if trimmed > 0 {
+		let after = session.get_full_context_tokens(config).await;
+		log_info!(
+			"Cut {} oversized tool result(s) to the {}-token cap before folding: {} -> {} tokens",
+			trimmed,
+			config.mcp_response_tokens_threshold,
+			current_tokens,
+			after
+		);
+		current_tokens = after;
+		if current_tokens < fire_line {
+			return (false, MIN_COMPRESSION_RATIO);
+		}
 	}
 
 	log_debug!(
@@ -186,7 +206,7 @@ pub async fn should_check_compression(session: &mut ChatSession, config: &Config
 	// the drained range (4-10k tokens for 80-180k folds), NOT the configured
 	// output cap — costing the fold at the cap overstated it ~3-5x and pinned
 	// the mid-turn decision at "wait".
-	let summary_cap = config.compression.decision.max_tokens;
+	let summary_cap = config.get_compression_model_profile().max_tokens;
 	let summary_tokens = if summary_cap > 0 {
 		(compressible / MAX_COMPRESSION_RATIO).min(summary_cap as f64)
 	} else {
@@ -220,17 +240,62 @@ pub async fn should_check_compression(session: &mut ChatSession, config: &Config
 	}
 }
 
+/// Cut every stored tool result back to the configured response cap; returns
+/// how many were cut. Deterministic and free — the same rule the ingest path
+/// applies, enforced on what is actually about to be SENT.
+///
+/// A tool result that entered the context oversized (a session written before
+/// the ingest cap bound it, or any path that bypassed it) is otherwise
+/// unreachable: it lands in the live exchange, which the preserving fold never
+/// drains, so every later turn re-sends it and the session can do nothing but
+/// fail at the ceiling forever. The full body goes to a spill file first, so it
+/// stays available to read — it just stops riding in every request.
+fn trim_oversized_tool_results(session: &mut ChatSession, cap: usize) -> usize {
+	if cap == 0 {
+		return 0;
+	}
+	let mut trimmed = 0;
+	for message in &mut session.session.messages {
+		if message.role != "tool" {
+			continue;
+		}
+		let tool = message.name.as_deref().unwrap_or_default();
+		let (cut, was_truncated) =
+			crate::utils::truncation::truncate_mcp_response_global(&message.content, cap, tool);
+		if was_truncated {
+			message.content = cut;
+			trimmed += 1;
+		}
+	}
+	trimmed
+}
+
 /// Refuse an API call only when the fully materialized context remains above
-/// its usable bound after compression. This is the escape hatch for an
-/// infeasible fold (for example, an enormous protected current turn): retrying
-/// compression would destroy fresh summaries, while sending the request would
-/// violate the model window.
+/// its usable bound after compression AND after every stored tool result has
+/// been cut to its cap. This is the escape hatch for an infeasible fold (for
+/// example, an enormous protected current turn): retrying compression would
+/// destroy fresh summaries, while sending the request would violate the model
+/// window.
 pub async fn ensure_context_within_ceiling(
 	session: &mut ChatSession,
 	config: &Config,
 ) -> Result<()> {
-	let current_tokens = session.get_full_context_tokens(config).await;
 	let ceiling = context_ceiling(session, config);
+	let mut current_tokens = session.get_full_context_tokens(config).await;
+	if current_tokens > ceiling {
+		let trimmed = trim_oversized_tool_results(session, config.mcp_response_tokens_threshold);
+		if trimmed > 0 {
+			let after = session.get_full_context_tokens(config).await;
+			log_info!(
+				"Cut {} oversized tool result(s) to the {}-token response cap: {} -> {} tokens",
+				trimmed,
+				config.mcp_response_tokens_threshold,
+				current_tokens,
+				after
+			);
+			current_tokens = after;
+		}
+	}
 	if current_tokens > ceiling {
 		return Err(anyhow::anyhow!(
 			"context remains above the usable ceiling after compression ({} > {} tokens); shorten the current request or increase the configured/model context limit",
@@ -292,6 +357,7 @@ struct FoldContext {
 	last_user_message: Option<crate::session::Message>,
 	previous_assistant_response: Option<String>,
 	preserved_skills: Vec<crate::session::Message>,
+	recalled_context: Vec<String>,
 	pact: Option<attention::PactContext>,
 	preserve_recent_user_bridge: bool,
 	started: std::time::Instant,
@@ -398,9 +464,12 @@ async fn finish_fold(
 	}
 	let should_compress = ai::evaluate_decision(&summary, force, ctx.pact.is_some());
 
+	// A paid decline is not a fold: it frees nothing, so it must not climb the
+	// fire-line ladder (that donated window headroom to a non-event and pushed
+	// the next fold toward the forced ceiling path). Hold for one runway instead.
 	if !should_compress {
 		log_debug!("AI decided compression not beneficial at this point");
-		session.session.info.consecutive_compressions += 1;
+		note_fold_failure(session);
 		return Ok(false);
 	}
 
@@ -437,7 +506,7 @@ async fn finish_fold(
 						"Compression rejected before drain: PACT attribution/continuity validation failed: {}",
 						error
 					);
-					session.session.info.consecutive_compressions += 1;
+					note_fold_failure(session);
 					return Ok(false);
 				}
 			}
@@ -496,6 +565,7 @@ async fn finish_fold(
 		ctx.last_user_message,
 		ctx.previous_assistant_response,
 		ctx.preserved_skills,
+		ctx.recalled_context,
 		config,
 		ctx.pact.as_ref(),
 		pact_validation.as_ref(),
@@ -700,6 +770,15 @@ pub async fn check_and_compress_conversation(
 		&skill_names_to_preserve,
 	);
 
+	// Recall grace window rides the same task-continuity gate as skills: an
+	// automatic fold continues the task, so freshly recalled blocks stay live;
+	// `/done` is a task boundary and pins nothing.
+	let recalled_context = if preserves_active_skills(trigger) {
+		collect_recent_recall_context(&session.session.messages, start_idx + 1, end_idx)
+	} else {
+		Vec::new()
+	};
+
 	// COMPRESS-ALL: Extract user messages BEFORE compression.
 	//
 	// Two paths feed user intent into the post-compression session:
@@ -872,6 +951,7 @@ pub async fn check_and_compress_conversation(
 		last_user_message,
 		previous_assistant_response,
 		preserved_skills,
+		recalled_context,
 		pact,
 		preserve_recent_user_bridge,
 		started: pact_started,

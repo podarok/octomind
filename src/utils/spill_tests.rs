@@ -40,6 +40,7 @@ fn test_read_text_files() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_spill_write_read_clear_in_session() {
 	crate::session::context::with_session_id("spill-test-session".to_string(), async {
 		let path = write_spill("shell", "spilled full output body").expect("spill writes");
@@ -56,6 +57,27 @@ async fn test_spill_write_read_clear_in_session() {
 		clear_current_session();
 		assert!(!path.exists(), "clear must remove the spill dir");
 		assert!(read_text_files(&spill_dir, 10_000).is_empty());
+	})
+	.await;
+}
+
+/// A spill path is quoted in a truncation notice that outlives the run that
+/// wrote it, so the file has to outlive it too: it belongs beside the session
+/// data, not in the OS temp dir the next reboot reclaims. (Asserted by
+/// location, not by absence from the temp dir — a sandboxed `OCTOMIND_DATA_DIR`
+/// may legitimately point there.)
+#[tokio::test]
+#[serial_test::serial]
+async fn test_spill_lives_with_the_session_not_in_temp() {
+	crate::session::context::with_session_id("spill-durability-session".to_string(), async {
+		let path = write_spill("view", "full body that must survive a resume").expect("spill");
+		let sessions_dir = crate::directories::get_sessions_dir().expect("sessions dir");
+		assert!(
+			path.starts_with(&sessions_dir),
+			"spill must live under the sessions directory, got {}",
+			path.display()
+		);
+		clear_current_session();
 	})
 	.await;
 }

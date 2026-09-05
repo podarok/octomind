@@ -78,3 +78,80 @@ async fn test_inbox_message_display_metadata() {
 
 	display_injected_input(&msg);
 }
+
+#[tokio::test]
+async fn test_mid_turn_pop_takes_results_and_leaves_user_injections() {
+	// The tool loop delivers results a running turn may be waiting on, but a
+	// human-shaped injection carries a new task and must start its own turn.
+	crate::session::context::with_session_id("inbox-test-mid-turn".to_string(), async {
+		init_inbox_for_session();
+		push_inbox_message(InboxMessage {
+			source: InboxSource::Inject,
+			content: "user says something new".to_string(),
+		});
+		push_inbox_message(InboxMessage {
+			source: InboxSource::BackgroundJob {
+				id: "80551-17".to_string(),
+			},
+			content: "<background_job>exited with code 0</background_job>".to_string(),
+		});
+
+		let job = try_pop_system_managed_message().expect("job result delivered mid-turn");
+		assert!(job.content.contains("exited with code 0"));
+		assert!(
+			try_pop_system_managed_message().is_none(),
+			"a user injection is not delivered mid-turn"
+		);
+
+		let queued = try_pop_inbox_message().expect("user injection still queued");
+		assert_eq!(queued.content, "user says something new");
+
+		clear_inbox_for_session(&crate::session::context::expect_session_id());
+	})
+	.await;
+}
+
+#[tokio::test]
+async fn test_drain_batches_results_and_stops_at_a_user_message() {
+	crate::session::context::with_session_id("inbox-test-batch".to_string(), async {
+		init_inbox_for_session();
+		push_inbox_message(schedule_msg("schedule fired"));
+		push_inbox_message(InboxMessage {
+			source: InboxSource::BackgroundJob {
+				id: "80551-17".to_string(),
+			},
+			content: "job done".to_string(),
+		});
+		push_inbox_message(InboxMessage {
+			source: InboxSource::Inject,
+			content: "a new task".to_string(),
+		});
+		push_inbox_message(schedule_msg("fired after the user message"));
+
+		// Everything the model can answer in one turn, up to the user message.
+		let batch = drain_inbox_batch();
+		assert_eq!(batch.len(), 2);
+		assert_eq!(batch[0].content, "schedule fired");
+		assert_eq!(batch[1].content, "job done");
+
+		// A human-shaped message heads its own batch and takes nothing with it.
+		let user_batch = drain_inbox_batch();
+		assert_eq!(user_batch.len(), 1);
+		assert_eq!(user_batch[0].content, "a new task");
+
+		let tail = drain_inbox_batch();
+		assert_eq!(tail.len(), 1);
+		assert_eq!(tail[0].content, "fired after the user message");
+		assert!(drain_inbox_batch().is_empty());
+
+		clear_inbox_for_session(&crate::session::context::expect_session_id());
+	})
+	.await;
+}
+
+#[test]
+fn test_drain_outside_a_session_context_is_empty() {
+	// Producers can run before a session exists; draining must not panic there.
+	assert!(drain_inbox_batch().is_empty());
+	assert!(try_pop_system_managed_message().is_none());
+}

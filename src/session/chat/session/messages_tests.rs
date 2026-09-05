@@ -145,6 +145,25 @@ fn system_managed_turn_message_is_wrapped_and_not_turn_owned() {
 }
 
 #[test]
+fn deferred_turn_hands_eligibility_to_the_resuming_delivery_once() {
+	let mut session = ChatSession::for_tests(Vec::new());
+	session.completion_gate_eligible = true;
+	session.gate_deferred = true;
+	session
+		.add_system_managed_turn_message("job result")
+		.unwrap();
+	assert!(session.completion_gate_eligible);
+	assert!(!session.gate_deferred);
+	session
+		.add_system_managed_turn_message("schedule fired")
+		.unwrap();
+	assert!(!session.completion_gate_eligible);
+	session.gate_deferred = true;
+	session.add_user_message("new request").unwrap();
+	assert!(!session.gate_deferred);
+}
+
+#[test]
 fn assistant_message_tracks_usage_and_cost_from_exchange() {
 	let mut session = ChatSession::for_tests(Vec::new());
 	let config = crate::session::chat::test_support::fake_provider_config();
@@ -174,4 +193,67 @@ fn assistant_message_tracks_usage_and_cost_from_exchange() {
 	assert!((session.session.info.total_cost - 0.5).abs() < 1e-9);
 	assert_eq!(session.session.info.total_api_time_ms, 250);
 	assert_eq!(session.turn_answers, vec!["answer".to_string()]);
+}
+
+#[test]
+fn inbox_batch_takes_turn_semantics_once_from_its_head() {
+	use crate::session::inbox::{InboxMessage, InboxSource};
+
+	let mut session = ChatSession::for_tests(Vec::new());
+	session.completion_gate_eligible = true;
+	session.gate_deferred = true;
+	let batch = vec![
+		InboxMessage {
+			source: InboxSource::BackgroundJob {
+				id: "job-a".to_string(),
+			},
+			content: "job a finished".to_string(),
+		},
+		InboxMessage {
+			source: InboxSource::BackgroundJob {
+				id: "job-b".to_string(),
+			},
+			content: "job b failed".to_string(),
+		},
+	];
+
+	session.add_inbox_batch(&batch).unwrap();
+
+	assert_eq!(session.session.messages.len(), 2);
+	assert!(session.session.messages[0]
+		.content
+		.contains("job a finished"));
+	assert!(session.session.messages[1].content.contains("job b failed"));
+	// The head claims the deferred turn; the tail rides along without blanking it
+	// (a second add_system_managed_turn_message would — see the deferred-turn test).
+	assert!(session.completion_gate_eligible);
+	assert!(!session.gate_deferred);
+}
+
+#[test]
+fn inbox_batch_headed_by_a_user_message_owns_the_turn() {
+	use crate::session::inbox::{InboxMessage, InboxSource};
+
+	let mut session = ChatSession::for_tests(Vec::new());
+	session.completion_gate_eligible = false;
+	let batch = vec![InboxMessage {
+		source: InboxSource::Inject,
+		content: "a new request".to_string(),
+	}];
+
+	session.add_inbox_batch(&batch).unwrap();
+
+	assert_eq!(session.session.messages.len(), 1);
+	assert_eq!(session.session.messages[0].role, "user");
+	assert_eq!(session.session.messages[0].content, "a new request");
+	assert!(session.completion_gate_eligible);
+}
+
+#[test]
+fn empty_inbox_batch_changes_nothing() {
+	let mut session = ChatSession::for_tests(Vec::new());
+	session.completion_gate_eligible = false;
+	session.add_inbox_batch(&[]).unwrap();
+	assert!(session.session.messages.is_empty());
+	assert!(!session.completion_gate_eligible);
 }

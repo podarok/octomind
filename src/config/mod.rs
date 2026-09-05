@@ -39,6 +39,8 @@ pub mod loading;
 
 pub mod mcp;
 
+pub mod model;
+
 pub mod migrations;
 
 pub mod providers;
@@ -62,6 +64,7 @@ mod merge;
 pub use hooks::*;
 pub use layers::*;
 pub use mcp::*;
+pub use model::*;
 pub use providers::*;
 pub use registry::*;
 pub use roles::*;
@@ -69,7 +72,7 @@ pub use roles::*;
 // Agent configuration - removed, now uses LayerConfig directly
 
 // Current config version - increment when making breaking changes
-pub const CURRENT_CONFIG_VERSION: u32 = 11;
+pub const CURRENT_CONFIG_VERSION: u32 = 12;
 
 // Type alias to simplify the complex return type for get_role_config
 type RoleConfigResult<'a> = (
@@ -115,26 +118,9 @@ impl LogLevel {
 
 // REMOVED: All default functions - config must be complete and explicit
 
-/// Compression decision model configuration
-/// All standard model parameters for the compression decision API call
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CompressionDecisionConfig {
-	/// Model to use for compression decisions (provider:model format)
-	/// Example: "openrouter:anthropic/claude-haiku-4" (cost-efficient for decisions)
-	pub model: String,
-	/// Maximum tokens to generate (0 = no limit, let AI decide based on prompt)
-	pub max_tokens: u32,
-	/// Sampling temperature (0.0 to 2.0)
-	pub temperature: f32,
-	/// Top-p nucleus sampling (0.0 to 1.0)
-	pub top_p: f32,
-	/// Top-k sampling (1 to infinity)
-	pub top_k: u32,
-	/// Maximum retry attempts on failure
-	pub max_retries: u32,
-	/// Base timeout for exponential backoff retry logic (seconds)
-	pub retry_timeout: u64,
-}
+/// Compression uses the same model-profile override contract as every other
+/// model-bearing boundary. Missing fields inherit from the main profile.
+pub type CompressionDecisionConfig = ModelProfileOverride;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -186,7 +172,8 @@ pub struct CompressionConfig {
 	pub threshold: usize,
 	/// Decision model configuration for compression decisions and summary generation
 	/// Use a fast, cheap model like Haiku for cost savings (10x cheaper than Sonnet)
-	pub decision: CompressionDecisionConfig,
+	#[serde(default)]
+	pub model: CompressionDecisionConfig,
 	/// Maximum number of critical knowledge entries to retain across compressions.
 	/// Each compression may extract a short knowledge snippet; only the last N are kept.
 	#[serde(default = "default_knowledge_retention")]
@@ -302,15 +289,13 @@ pub struct Config {
 	// Root-level log level setting (takes precedence over role-specific)
 	pub log_level: LogLevel,
 
-	// Root-level model setting (used by all commands if specified)
-	pub model: String,
+	// Complete main model profile. Other model-bearing boundaries inherit it.
+	#[serde(rename = "model")]
+	pub model_profile: ModelProfile,
 
 	// Default tag used when no TAG is passed to `octomind run/acp/server`.
 	// Can be a role name (e.g. "developer") or a tap agent (e.g. "octomind:assistant").
 	pub default: String,
-
-	// Root-level max_tokens setting (used by all commands if specified)
-	pub max_tokens: u32,
 
 	// System-wide configuration settings (not role-specific)
 	pub mcp_response_tokens_threshold: usize,
@@ -337,20 +322,6 @@ pub struct Config {
 	pub max_session_spending_threshold: f64,
 	// Request spending threshold in USD - if > 0, stop execution when exceeded during single request
 	pub max_request_spending_threshold: f64,
-
-	// Maximum number of retries for API calls (can be overridden by --max-retries CLI flag)
-	pub max_retries: u32,
-
-	// Base timeout for exponential backoff retry logic (config-only, no CLI override)
-	pub retry_timeout: u32,
-
-	// Per-request HTTP timeout in seconds — hard limit on a single LLM HTTP call.
-	// 0 = no timeout (LLM responses can take minutes). Retry/backoff still applies on timeout.
-	pub request_timeout_seconds: u32,
-
-	// Reasoning effort hint for thinking-capable models (low/medium/high/xhigh/max).
-	// Applied to every LLM call via `to_octolib_params()`. Non-thinking models ignore it.
-	pub reasoning_effort: ReasoningEffortConfig,
 
 	// Agent configurations - simplified ACP-based definitions
 	#[serde(default)]
@@ -436,6 +407,20 @@ pub struct Config {
 
 	#[serde(skip)]
 	config_path: Option<PathBuf>,
+}
+
+impl std::ops::Deref for Config {
+	type Target = ModelProfile;
+
+	fn deref(&self) -> &Self::Target {
+		&self.model_profile
+	}
+}
+
+impl std::ops::DerefMut for Config {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.model_profile
+	}
 }
 
 impl McpConfig {
@@ -539,6 +524,20 @@ impl Config {
 		self.model.clone()
 	}
 
+	/// Resolve the selected role's complete model profile against main.
+	pub fn get_model_profile_for_role(&self, role: &str) -> ModelProfile {
+		let (role_config, _, _, _, _) = self.get_role_config(role);
+		role_config.model_override().resolve(&self.model_profile)
+	}
+
+	pub fn get_supervisor_model_profile(&self) -> ModelProfile {
+		self.supervisor.model.resolve(&self.model_profile)
+	}
+
+	pub fn get_compression_model_profile(&self) -> ModelProfile {
+		self.compression.model.resolve(&self.model_profile)
+	}
+
 	/// Get the effective max_tokens to use - uses root config max_tokens (now always required)
 	pub fn get_effective_max_tokens(&self) -> u32 {
 		// Max tokens is now always required in config, no fallback needed
@@ -580,15 +579,21 @@ impl Config {
 	}
 
 	/// Get the model for the specified role
-	pub fn get_model(&self, _role: &str) -> String {
-		// All roles now use the system-wide model
-		self.get_effective_model()
+	pub fn get_model(&self, role: &str) -> String {
+		if self.has_role(role) {
+			self.get_model_profile_for_role(role).model
+		} else {
+			self.get_effective_model()
+		}
 	}
 
 	/// Get the max_tokens for the specified role
-	pub fn get_max_tokens(&self, _role: &str) -> u32 {
-		// All roles now use the system-wide max_tokens
-		self.get_effective_max_tokens()
+	pub fn get_max_tokens(&self, role: &str) -> u32 {
+		if self.has_role(role) {
+			self.get_model_profile_for_role(role).max_tokens
+		} else {
+			self.get_effective_max_tokens()
+		}
 	}
 
 	/// Check whether a role is defined in the config.

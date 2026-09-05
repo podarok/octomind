@@ -188,20 +188,13 @@ impl Lesson {
 }
 
 /// Learning configuration — added to the main Config struct.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LearningConfig {
 	/// Enable the learning system.
 	#[serde(default)]
 	pub enabled: bool,
-	/// Model for extraction and retrieval prep LLM calls (cheap model recommended).
-	#[serde(default = "default_learning_model")]
-	pub model: String,
 	/// Grounded behavior synthesis and lifecycle management.
 	pub evolution: evolution::EvolutionConfig,
-}
-
-fn default_learning_model() -> String {
-	"anthropic:claude-haiku-4-5-20251001".into()
 }
 
 /// Minimum user messages before intermediate learning triggers during
@@ -211,12 +204,6 @@ pub const MIN_MESSAGES_FOR_INTERMEDIATE: usize = 3;
 /// Soft time-decay: scoped entries unused for this many days lose confidence.
 pub const DECAY_DAYS: u64 = 90;
 
-impl Default for LearningConfig {
-	fn default() -> Self {
-		Self {
-			enabled: false,
-			model: default_learning_model(),
-			evolution: evolution::EvolutionConfig::default(),
-		}
-	}
-}
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod mod_tests;

@@ -392,7 +392,16 @@ pub async fn run_interactive_session(
 
 			for msg in last_messages.iter().rev() {
 				if msg.role == "assistant" {
-					println!("{}", msg.content.bright_green());
+					let visible =
+						crate::session::chat::assistant_output::strip_system_tags(&msg.content);
+					if !visible.is_empty() {
+						crate::session::chat::assistant_output::print_assistant_response(
+							&visible,
+							&config_for_role,
+							&role,
+							&None,
+						);
+					}
 				} else if msg.role == "tool" {
 					log_debug!(msg.content);
 				} else if msg.role == "user" {
@@ -777,7 +786,20 @@ pub async fn run_interactive_session(
 								Err(e) if crate::session::cancellation::is_cancelled(&e) => {
 									continue;
 								}
-								Err(e) => return Err(e),
+								Err(e) => {
+									// Same as the initial call, minus the rollback: the
+									// tool results already in history stay valid, so
+									// report without truncating and keep the retry
+									// buffer armed.
+									let model_for_error = chat_session.model.clone();
+									handle_followup_api_error(
+										&model_for_error,
+										&e,
+										OutputMode::Interactive,
+									);
+									last_failed_followup = true;
+									continue;
+								}
 							}
 
 							let retry_result = tokio::select! {
@@ -1237,7 +1259,29 @@ pub async fn run_interactive_session(
 			{
 				Ok(()) => {}
 				Err(e) if crate::session::cancellation::is_cancelled(&e) => continue,
-				Err(e) => return Err(e),
+				Err(e) => {
+					// A preparation failure — compression, the context ceiling, a
+					// layer — is one turn's failure, exactly like a provider error:
+					// report it, roll the turn back, hand the prompt back. Ending
+					// the whole interactive session over a request that never left
+					// the machine loses every other thing the session was holding.
+					let model_for_error = chat_session.model.clone();
+					handle_api_error(
+						&mut chat_session,
+						user_message_index,
+						&model_for_error,
+						&e,
+						OutputMode::Interactive,
+					);
+					println!(
+						"{}",
+						"💡 Press Ctrl+G with empty input to retry the last failed request."
+							.dimmed()
+					);
+					last_failed_input = Some(original_input_for_retry);
+					*current_operation.lock().unwrap() = None;
+					continue;
+				}
 			}
 
 			// Capture message count BEFORE API call to detect if assistant message gets added
@@ -1805,24 +1849,32 @@ pub async fn run_interactive_session_with_input(
 		// as long as nothing is in flight.
 		crate::mcp::orchestration::flush_idle_to_inbox();
 
-		// Process all messages currently in the inbox.
-		while let Some(inbox_msg) = crate::session::inbox::try_pop_inbox_message() {
-			log_debug!("Non-interactive: processing inbox message from {:?}", inbox_msg.source);
+		// Process everything currently in the inbox. Each drain takes the batch the
+		// model can answer in one turn, so results that piled up while it worked cost
+		// one call between them, not one turn each.
+		loop {
+			let batch = crate::session::inbox::drain_inbox_batch();
+			if batch.is_empty() {
+				break;
+			}
+			for inbox_msg in &batch {
+				log_debug!("Non-interactive: processing inbox message from {:?}", inbox_msg.source);
 
-			// Tell structured consumers (JSONL) what's about to drive the AI, so a
-			// scheduled / agent / skill turn is distinguishable from a user turn.
-			// Plain non-interactive mode stays silent — adding a header line would
-			// corrupt downstream parsers that just want raw AI text.
-			if current_config.runtime_output_mode.as_deref() == Some("jsonl") {
-				let injected =
-					crate::websocket::ServerMessage::Injected(crate::websocket::protocol::InjectedPayload {
-						source_kind: inbox_msg.source.display_kind().to_string(),
-						source_label: inbox_msg.source.display_label(),
-						content: inbox_msg.content.clone(),
-						session_id: chat_session.session.info.name.clone(),
-					});
-				if let Ok(json) = serde_json::to_string(&injected) {
-					println!("{}", json);
+				// Tell structured consumers (JSONL) what's about to drive the AI, so a
+				// scheduled / agent / skill turn is distinguishable from a user turn.
+				// Plain non-interactive mode stays silent — adding a header line would
+				// corrupt downstream parsers that just want raw AI text.
+				if current_config.runtime_output_mode.as_deref() == Some("jsonl") {
+					let injected =
+						crate::websocket::ServerMessage::Injected(crate::websocket::protocol::InjectedPayload {
+							source_kind: inbox_msg.source.display_kind().to_string(),
+							source_label: inbox_msg.source.display_label(),
+							content: inbox_msg.content.clone(),
+							session_id: chat_session.session.info.name.clone(),
+						});
+					if let Ok(json) = serde_json::to_string(&injected) {
+						println!("{}", json);
+					}
 				}
 			}
 
@@ -1837,11 +1889,7 @@ pub async fn run_interactive_session_with_input(
 			)
 			.await;
 
-			if inbox_msg.source.is_system_managed() {
-				chat_session.add_system_managed_turn_message(&inbox_msg.content)?;
-			} else {
-				chat_session.add_user_message(&inbox_msg.content)?;
-			}
+			chat_session.add_inbox_batch(&batch)?;
 			prepare_for_api_call(&mut chat_session, &current_config, operation_rx.clone()).await?;
 
 			let is_jsonl = current_config.runtime_output_mode.as_deref() == Some("jsonl");

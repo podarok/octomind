@@ -73,7 +73,7 @@ pub async fn setup_and_initialize_session(
 	bool,
 	Option<indicatif::ProgressBar>,
 )> {
-	use indicatif::{ProgressBar, ProgressStyle};
+	use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 	// Read session parameters directly off the args struct.
 	let name = args.name.clone();
@@ -95,9 +95,8 @@ pub async fn setup_and_initialize_session(
 		"plain".to_string()
 	};
 	// ACP/WebSocket/JSONL are structured transports even when somebody launches
-	// them from a terminal. Never create a spinner there: besides corrupting the
-	// wire stream, its synchronous suspend path uses `block_in_place`, which
-	// panics inside ACP's LocalSet.
+	// them from a terminal. Never create a spinner there: it would corrupt the
+	// wire stream.
 	let is_interactive = output_mode == "plain" && std::io::stdin().is_terminal();
 
 	// Validate role exists before doing anything — give a clean error instead of a panic
@@ -110,20 +109,15 @@ pub async fn setup_and_initialize_session(
 		));
 	}
 
-	// Get role config for defaults
-	let (role_config, _, _, _, _) = config.get_role_config(&role);
-
 	// Validate provider credentials before starting — fail fast with a clear error
-	// Priority: CLI --model > role.model > config.model
-	let effective_model = model
-		.as_deref()
-		.or(role_config.model.as_deref())
-		.unwrap_or(&config.model);
+	// Priority: runtime model > role model profile > main model profile.
+	let role_profile = config.get_model_profile_for_role(&role);
+	let effective_model = model.clone().unwrap_or_else(|| role_profile.model.clone());
 
 	// Fail fast: --schema enforcement needs a model that supports structured output.
 	// Checked before the spinner starts so the error surfaces cleanly.
 	if args.schema.is_some() {
-		crate::session::ensure_structured_output_support(effective_model)?;
+		crate::session::ensure_structured_output_support(&effective_model)?;
 	}
 
 	// Print startup banner before the spinner so the icon stays visible above the
@@ -137,7 +131,7 @@ pub async fn setup_and_initialize_session(
 			format!("{}", display_random_tip().bright_yellow()),
 			format!("{}", "? for shortcuts • /help for commands".bright_black()),
 		];
-		crate::branding::print_startup_banner(&role, effective_model, &cwd, &extra);
+		crate::branding::print_startup_banner(&role, &effective_model, &cwd, &extra);
 	}
 
 	// Show loading spinner in interactive mode
@@ -156,7 +150,7 @@ pub async fn setup_and_initialize_session(
 		None
 	};
 
-	if let Err(e) = validate_provider_credentials(effective_model) {
+	if let Err(e) = validate_provider_credentials(&effective_model) {
 		if let Some(sp) = spinner {
 			sp.finish_and_clear();
 			print!("\x1B[2K\r");
@@ -212,19 +206,15 @@ pub async fn setup_and_initialize_session(
 	if let Some(model) = model.clone() {
 		session_params = session_params.with_model(model);
 	}
-
-	// Use CLI temperature if provided, otherwise use role config temperature
-	let effective_temperature = temperature.unwrap_or(role_config.temperature);
-	session_params = session_params.with_temperature(effective_temperature);
-
-	// Use CLI max_tokens if provided, otherwise use config default
-	let effective_max_tokens =
-		max_tokens.unwrap_or_else(|| config_for_role.get_effective_max_tokens());
-	session_params = session_params.with_max_tokens(effective_max_tokens);
-
-	// Use CLI max_retries if provided, otherwise use root config max_retries
-	let effective_max_retries = max_retries.unwrap_or(config_for_role.max_retries);
-	session_params = session_params.with_max_retries(effective_max_retries);
+	if let Some(temperature) = temperature {
+		session_params = session_params.with_temperature(temperature);
+	}
+	if let Some(max_tokens) = max_tokens {
+		session_params = session_params.with_max_tokens(max_tokens);
+	}
+	if let Some(max_retries) = max_retries {
+		session_params = session_params.with_max_retries(max_retries);
+	}
 
 	// Set output mode for CLI output suppression in JSONL mode
 	let output_mode_for_check = output_mode.clone();
@@ -237,13 +227,14 @@ pub async fn setup_and_initialize_session(
 	}
 
 	let mut chat_session = if let Some(ref sp) = spinner {
-		let result = sp.suspend(|| {
-			// ChatSession::initialize is async but suspend takes sync fn
-			// We need to block briefly — this is during startup, acceptable
-			tokio::task::block_in_place(|| {
-				tokio::runtime::Handle::current().block_on(ChatSession::initialize(session_params))
-			})
-		});
+		// `initialize` prints, so the bar must not draw over it. `suspend()` takes a
+		// sync closure and bridging an async call through it costs a `block_in_place`,
+		// which panics on any current-thread runtime — ACP's LocalSet and every
+		// `#[tokio::test]` that starts a session on a TTY. Hiding the bar for the
+		// duration keeps the output clean and blocks nothing.
+		sp.set_draw_target(ProgressDrawTarget::hidden());
+		let result = ChatSession::initialize(session_params).await;
+		sp.set_draw_target(ProgressDrawTarget::stderr());
 		result?
 	} else {
 		ChatSession::initialize(session_params).await?

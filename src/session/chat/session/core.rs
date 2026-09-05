@@ -188,6 +188,8 @@ pub struct ChatSession {
 	pub pending_image: Option<crate::session::image::ImageAttachment>, // Pending image attachment
 	pub pending_video: Option<crate::session::video::VideoAttachment>, // Pending video attachment
 	pub max_retries: u32,              // Maximum number of retries for provider errors
+	pub retry_timeout: u64,
+	pub request_timeout_seconds: u64,
 	pub was_resumed: bool, // Flag indicating if this session was resumed from an existing file
 
 	pub initial_status_shown: bool, // Flag to track if initial status line was displayed
@@ -249,6 +251,11 @@ pub struct ChatSession {
 	/// Supervisor repair notes preserve the existing value so a legitimate gate
 	/// re-entry still verifies the original user turn.
 	pub completion_gate_eligible: bool,
+	/// Set when an eligible turn ends with session-owned work still in flight
+	/// (a detached shell job, a tap run, a background agent). The inbox delivery
+	/// that resumes the agent continues the same task, so it inherits
+	/// eligibility instead of being treated as a control-plane event.
+	pub gate_deferred: bool,
 	/// Supervisor: re-entry counter for the FREE deterministic checks (pre-gate,
 	/// plan, coverage, evidence). Deliberately separate from `gate_iterations`:
 	/// a zero-cost nudge that the agent then satisfies must not spend the paid
@@ -313,42 +320,17 @@ pub struct ChatSession {
 }
 
 /// Parameters for creating a new ChatSession
-pub struct ChatSessionParams<'a> {
+pub struct ChatSessionParams {
 	pub name: String,
-	pub model: Option<String>,
-	pub temperature: Option<f32>,
-	pub top_p: Option<f32>,
-	pub top_k: Option<u32>,
-	pub max_tokens: Option<u32>,
-	pub max_retries: Option<u32>,
-	pub config: &'a Config,
-	pub role: &'a str,
+	pub profile: crate::config::ModelProfile,
+	pub role: String,
 }
 
 impl ChatSession {
 	// Create a new chat session
-	pub fn new(params: ChatSessionParams<'_>) -> Self {
-		let model_name = params
-			.model
-			.unwrap_or_else(|| params.config.get_effective_model());
-		// STRICT: temperature should always be provided from role config, no fallbacks
-		let temperature_value = params
-			.temperature
-			.expect("Temperature must be provided from role config");
-		// STRICT: top_p should always be provided from role config, no fallbacks
-		let top_p_value = params
-			.top_p
-			.expect("Top_p must be provided from role config");
-		// STRICT: top_k should always be provided from role config, no fallbacks
-		let top_k_value = params
-			.top_k
-			.expect("Top_k must be provided from role config");
-		// STRICT: max_tokens should always be provided from role config, no fallbacks
-		let max_tokens_value = params
-			.max_tokens
-			.expect("Max tokens must be provided from role config");
-		// max_retries falls back to config value if not explicitly overridden via CLI
-		let max_retries_value = params.max_retries.unwrap_or(params.config.max_retries);
+	pub fn new(params: ChatSessionParams) -> Self {
+		let profile = params.profile;
+		let model_name = profile.model.clone();
 
 		// Create a new session with initial info
 		let timestamp = SystemTime::now()
@@ -360,7 +342,7 @@ impl ChatSession {
 			name: params.name.clone(),
 			created_at: timestamp,
 			model: model_name.clone(),
-			role: params.role.to_string(),
+			role: params.role.clone(),
 			input_tokens: 0,
 			output_tokens: 0,
 			cache_read_tokens: 0,
@@ -409,21 +391,23 @@ impl ChatSession {
 			turn_started_at: None,
 			turn_answers: Vec::new(),
 			model: model_name,
-			role: params.role.to_string(),
-			temperature: temperature_value,     // Use the provided temperature
-			top_p: top_p_value,                 // Use the provided top_p
-			top_k: top_k_value,                 // Use the provided top_k
-			max_tokens: max_tokens_value,       // Use the provided max_tokens
+			role: params.role,
+			temperature: profile.temperature,
+			top_p: profile.top_p,
+			top_k: profile.top_k,
+			max_tokens: profile.max_tokens,
 			estimated_cost: 0.0,                // Initialize estimated cost as zero
 			cache_next_user_message: false,     // Initialize cache flag
 			spending_threshold_checkpoint: 0.0, // Initialize spending checkpoint
 			request_spending_checkpoint: 0.0,   // Initialize request spending checkpoint
 			pending_image: None,                // Initialize pending image
 			pending_video: None,                // Initialize pending video
-			max_retries: max_retries_value,     // Set max retries value
-			was_resumed: false,                 // This is a new session
-			initial_status_shown: false,        // Initialize status display flag
-			cached_tools: None,                 // Initialize tool cache (populated on first use)
+			max_retries: profile.max_retries,
+			retry_timeout: profile.retry_timeout,
+			request_timeout_seconds: profile.request_timeout_seconds,
+			was_resumed: false,          // This is a new session
+			initial_status_shown: false, // Initialize status display flag
+			cached_tools: None,          // Initialize tool cache (populated on first use)
 			fold_job: None,
 			fold_cooldown_until_call: 0,
 			schema: None, // Schema set later via CLI override
@@ -435,11 +419,12 @@ impl ChatSession {
 			pending_recall: false,
 			learning_extracted: false,
 			learning_outcome: crate::supervisor::learning::TrajectoryOutcome::Unknown,
-			reasoning_effort: None,
+			reasoning_effort: Some(profile.reasoning_effort),
 			last_self_report: None,
 			detectors: crate::supervisor::detect::Detectors::default(),
 			gate_iterations: 0,
 			completion_gate_eligible: true,
+			gate_deferred: false,
 			nudge_iterations: 0,
 			gate_failed: false,
 			last_gate_gaps: Vec::new(),
@@ -507,34 +492,15 @@ impl ChatSession {
 
 		let session_file = sessions_dir.join(format!("{}.jsonl.zst", session_name));
 
-		// Get role config once — used for temperature, top_p, top_k, and optional model override
-		let (role_config, _, _, _, _) = params.config.get_role_config(params.role);
-
-		// CLI model overrides role model which overrides global config model
-		// Priority: CLI --model > role.model > config.model
-		let effective_model = params
-			.model
-			.clone()
-			.or_else(|| role_config.model.clone())
-			.unwrap_or_else(|| params.config.get_effective_model());
-
-		// Get temperature from role config if not provided via command line
-		let effective_temperature = if let Some(temp) = params.temperature {
-			temp // Use command line override
-		} else {
-			role_config.temperature
+		let runtime_profile = crate::config::ModelProfileOverride {
+			model: params.model.clone(),
+			temperature: params.temperature,
+			max_tokens: params.max_tokens,
+			max_retries: params.max_retries,
+			..Default::default()
 		};
-
-		let effective_top_p = role_config.top_p;
-		let effective_top_k = role_config.top_k;
-
-		// Get max_tokens from root config if not provided via command line
-		let effective_max_tokens = if let Some(tokens) = params.max_tokens {
-			tokens // Use command line override
-		} else {
-			// Read from root configuration - STRICT: assume it exists
-			params.config.get_effective_max_tokens()
-		};
+		let effective_profile =
+			runtime_profile.resolve(&params.config.get_model_profile_for_role(params.role));
 
 		// Check if we should load or create a session
 		let should_resume = if effective_resume.is_some() {
@@ -640,19 +606,21 @@ impl ChatSession {
 						last_response: String::new(),
 						turn_started_at: None,
 						turn_answers: Vec::new(),
-						model: restored_model,               // Use restored model from session
-						role: params.role.to_string(),       // Add role from params
-						temperature: effective_temperature,  // Use config-based temperature
-						top_p: effective_top_p,              // Use config-based top_p
-						top_k: effective_top_k,              // Use config-based top_k
-						max_tokens: effective_max_tokens,    // Use config-based max_tokens
-						estimated_cost: restored_cost,       // FIXED: Use actual cost from session
+						model: restored_model,         // Use restored model from session
+						role: params.role.to_string(), // Add role from params
+						temperature: effective_profile.temperature,
+						top_p: effective_profile.top_p,
+						top_k: effective_profile.top_k,
+						max_tokens: effective_profile.max_tokens,
+						estimated_cost: restored_cost, // FIXED: Use actual cost from session
 						cache_next_user_message: cache_next, // Restore from session.info
 						spending_threshold_checkpoint: spending_checkpoint, // Restore from session.info
-						request_spending_checkpoint: 0.0,    // Initialize request spending checkpoint
-						pending_image: None,                 // Initialize pending image
-						pending_video: None,                 // Initialize pending video
-						max_retries: params.max_retries.unwrap_or(params.config.max_retries), // Use provided max_retries or fall back to config
+						request_spending_checkpoint: 0.0, // Initialize request spending checkpoint
+						pending_image: None,           // Initialize pending image
+						pending_video: None,           // Initialize pending video
+						max_retries: effective_profile.max_retries,
+						retry_timeout: effective_profile.retry_timeout,
+						request_timeout_seconds: effective_profile.request_timeout_seconds,
 						was_resumed: true,          // This session was resumed from file
 						initial_status_shown: true, // Don't show status for resumed sessions
 						cached_tools: None,         // Initialize tool cache (populated on first use)
@@ -667,11 +635,12 @@ impl ChatSession {
 						pending_recall: false,
 						learning_extracted: false,
 						learning_outcome: crate::supervisor::learning::TrajectoryOutcome::Unknown,
-						reasoning_effort: None,
+						reasoning_effort: Some(effective_profile.reasoning_effort),
 						last_self_report: None,
 						detectors: crate::supervisor::detect::Detectors::default(),
 						gate_iterations: 0,
 						completion_gate_eligible: true,
+						gate_deferred: false,
 						nudge_iterations: 0,
 						gate_failed: false,
 						last_gate_gaps: Vec::new(),
@@ -708,12 +677,9 @@ impl ChatSession {
 						if params.config.roles.iter().any(|r| r.name == restored_role) {
 							chat_session.role = restored_role;
 							// Update temperature and model from the restored role config
-							let (role_config, _, _, _, _) =
-								params.config.get_role_config(&chat_session.role);
-							chat_session.temperature = role_config.temperature;
-							if let Some(role_model) = role_config.model.clone() {
-								chat_session.model = role_model;
-							}
+							let role_profile =
+								params.config.get_model_profile_for_role(&chat_session.role);
+							chat_session.apply_model_profile(&role_profile);
 						}
 					}
 
@@ -812,14 +778,8 @@ impl ChatSession {
 
 					let mut chat_session = ChatSession::new(ChatSessionParams {
 						name: new_session_name.clone(),
-						model: Some(effective_model.clone()),
-						temperature: Some(effective_temperature), // Use config-based temperature
-						top_p: Some(effective_top_p),             // Use config-based top_p
-						top_k: Some(effective_top_k),             // Use config-based top_k
-						max_tokens: Some(effective_max_tokens),   // Use config-based max_tokens
-						max_retries: params.max_retries,          // Pass max_retries through
-						config: params.config,
-						role: params.role, // Add role parameter
+						profile: effective_profile.clone(),
+						role: params.role.to_string(),
 					});
 					chat_session.session.session_file = Some(new_session_file);
 
@@ -842,14 +802,8 @@ impl ChatSession {
 
 			let mut chat_session = ChatSession::new(ChatSessionParams {
 				name: session_name.clone(),
-				model: Some(effective_model),
-				temperature: Some(effective_temperature),
-				top_p: Some(effective_top_p),
-				top_k: Some(effective_top_k),
-				max_tokens: Some(effective_max_tokens),
-				max_retries: params.max_retries,
-				config: params.config,
-				role: params.role,
+				profile: effective_profile,
+				role: params.role.to_string(),
 			});
 			chat_session.session.session_file = Some(session_file);
 
@@ -860,6 +814,33 @@ impl ChatSession {
 	/// Get the effective model for this session (uses session.info.model directly)
 	pub fn get_effective_model(&self) -> &str {
 		&self.session.info.model
+	}
+
+	pub fn model_profile(&self, config: &Config) -> crate::config::ModelProfile {
+		crate::config::ModelProfile {
+			model: self.model.clone(),
+			reasoning_effort: self.reasoning_effort.unwrap_or(config.reasoning_effort),
+			max_tokens: self.max_tokens,
+			temperature: self.temperature,
+			top_p: self.top_p,
+			top_k: self.top_k,
+			max_retries: self.max_retries,
+			retry_timeout: self.retry_timeout,
+			request_timeout_seconds: self.request_timeout_seconds,
+		}
+	}
+
+	pub fn apply_model_profile(&mut self, profile: &crate::config::ModelProfile) {
+		self.model = profile.model.clone();
+		self.session.info.model = profile.model.clone();
+		self.temperature = profile.temperature;
+		self.top_p = profile.top_p;
+		self.top_k = profile.top_k;
+		self.max_tokens = profile.max_tokens;
+		self.max_retries = profile.max_retries;
+		self.retry_timeout = profile.retry_timeout;
+		self.request_timeout_seconds = profile.request_timeout_seconds;
+		self.reasoning_effort = Some(profile.reasoning_effort);
 	}
 
 	/// Attach image from file path
@@ -1464,6 +1445,8 @@ impl ChatSession {
 			pending_image: None,
 			pending_video: None,
 			max_retries: 0,
+			retry_timeout: 30,
+			request_timeout_seconds: 300,
 
 			was_resumed: false,
 			initial_status_shown: false,
@@ -1484,6 +1467,7 @@ impl ChatSession {
 			detectors: crate::supervisor::detect::Detectors::default(),
 			gate_iterations: 0,
 			completion_gate_eligible: true,
+			gate_deferred: false,
 			nudge_iterations: 0,
 			gate_failed: false,
 			last_gate_gaps: Vec::new(),

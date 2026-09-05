@@ -98,7 +98,7 @@ pub fn get_all_functions(config: &crate::config::Config) -> Vec<McpFunction> {
 			Use async when task takes 30+ seconds, or you can continue other work while waiting.\n\
 			Use sync when you need the result before your next action.\n\n\
 			Result format: [Async agent 'name' completed] or [Async agent 'name' failed]\n\
-			Max {} concurrent async jobs. Jobs cancelled on session exit.",
+			Track active work with /status. Max {} concurrent async jobs. Jobs cancelled on session exit.",
 			agent_config.description,
 			get_max_concurrent_jobs()
 		),
@@ -235,6 +235,11 @@ async fn execute_config_agent(
 		let agent_name_owned = agent_config.name.clone();
 		let task_owned = task.to_string();
 		let workdir_owned = workdir.to_path_buf();
+		let job_id = format!("agent-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+		let completion_job_id = job_id.clone();
+		let job_agent_name = agent_name_owned.clone();
+		let job_task = truncate_action(task, 120);
+		let job_workdir = workdir.display().to_string();
 		// Capture session ID before spawn — task-locals don't propagate across tokio::spawn
 		let session_id = crate::session::context::current_session_id();
 
@@ -258,10 +263,13 @@ async fn execute_config_agent(
 					Ok(text) => text,
 					Err(e) => format!("ERROR: {e:#}"),
 				};
-				mgr.release(CompletedJob {
-					agent_name: agent_name_owned,
-					output,
-				});
+				mgr.release_registered(
+					&completion_job_id,
+					CompletedJob {
+						agent_name: agent_name_owned,
+						output,
+					},
+				);
 			};
 			if let Some(sid) = session_id {
 				crate::session::context::with_session_id(sid, run).await;
@@ -272,6 +280,12 @@ async fn execute_config_agent(
 
 		// Register the job for potential cancellation
 		manager.register_job(JobHandle {
+			id: job_id.clone(),
+			agent_name: job_agent_name,
+			source: "config".to_string(),
+			task: job_task,
+			workdir: job_workdir,
+			started_at: std::time::SystemTime::now(),
 			cancel_tx,
 			task_handle: handle,
 		});
@@ -279,7 +293,7 @@ async fn execute_config_agent(
 		return Ok(McpToolResult::success(
 			call.tool_name.clone(),
 			call.tool_id.clone(),
-			"Agent task started asynchronously. The result will be injected into this conversation automatically when ready.".to_string(),
+			format!("Agent task [{job_id}] started asynchronously. Track it with /status; the result will be injected automatically when ready."),
 		));
 	}
 
@@ -362,6 +376,11 @@ async fn execute_dynamic_agent(
 		let (cancel_tx, cancel_rx) = watch::channel(false);
 		let mgr = Arc::clone(&manager);
 		let agent_name = agent_config_owned.name.clone();
+		let job_id = format!("agent-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+		let completion_job_id = job_id.clone();
+		let job_agent_name = agent_name.clone();
+		let job_task = truncate_action(task, 120);
+		let job_workdir = agent_config_owned.workdir.clone();
 		// Capture session ID before spawn — task-locals don't propagate across tokio::spawn
 		let session_id = crate::session::context::current_session_id();
 
@@ -378,7 +397,7 @@ async fn execute_dynamic_agent(
 					Ok(text) => text,
 					Err(e) => format!("ERROR: {e:#}"),
 				};
-				mgr.release(CompletedJob { agent_name, output });
+				mgr.release_registered(&completion_job_id, CompletedJob { agent_name, output });
 			};
 			if let Some(sid) = session_id {
 				crate::session::context::with_session_id(sid, run).await;
@@ -388,6 +407,12 @@ async fn execute_dynamic_agent(
 		});
 
 		manager.register_job(JobHandle {
+			id: job_id.clone(),
+			agent_name: job_agent_name,
+			source: "dynamic".to_string(),
+			task: job_task,
+			workdir: job_workdir,
+			started_at: std::time::SystemTime::now(),
 			cancel_tx,
 			task_handle: handle,
 		});
@@ -395,7 +420,7 @@ async fn execute_dynamic_agent(
 		return Ok(McpToolResult::success(
 			tool_name,
 			tool_id,
-			"Agent task started asynchronously. The result will be injected into this conversation automatically when ready.".to_string(),
+			format!("Agent task [{job_id}] started asynchronously. Track it with /status; the result will be injected automatically when ready."),
 		));
 	}
 
@@ -461,9 +486,8 @@ fn build_agent_config(
 		merged.mcp.allowed_tools.clear();
 	}
 
-	// Apply model override if specified
-	if let Some(ref model) = agent.model {
-		merged.model = model.clone();
+	if let Some(model) = &agent.model {
+		merged.model_profile.model = model.clone();
 	}
 
 	merged
@@ -695,12 +719,25 @@ fn run_dynamic_agent_in_process(
 /// split it themselves (e.g. via `split_whitespace`) before calling.
 ///
 /// `tap_run_id`, when set, mirrors streamed updates (tool calls, usage) into
-/// the tap-run live registry so `/agents` can show them while the run works.
+/// the tap-run live registry so `/status agents` can show them while the run works.
 ///
 /// `handback` marks this run as a SUBAGENT HANDOFF whose verification verdict
 /// the parent folds into its own round (see [`crate::supervisor::delegate`]).
 /// Layers pass `false`: they post-process the parent's answer rather than doing
 /// delegated work, so their verdict says nothing about the parent's tree.
+/// Write one newline-terminated JSON-RPC request to the ACP child. A broken
+/// pipe means the child already exited — not fatal here: the read side
+/// consumes whatever the child emitted before dying and reports the
+/// definitive outcome (its buffered response, or "Subprocess closed before
+/// response" on EOF). Surfacing the raw EPIPE instead would race the child's
+/// exit against our write.
+async fn write_acp_request(stdin: &mut tokio::process::ChildStdin, msg: Value) -> Result<()> {
+	match stdin.write_all(format!("{}\n", msg).as_bytes()).await {
+		Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => Err(e.into()),
+		_ => Ok(()),
+	}
+}
+
 pub async fn run_acp_command(
 	program: &str,
 	args: &[&str],
@@ -753,23 +790,19 @@ pub async fn run_acp_command(
 		.ok_or_else(|| anyhow::anyhow!("No stdout"))?;
 	let mut lines = BufReader::new(stdout).lines();
 
-	// Helper: serialize a JSON-RPC message to a newline-terminated string.
-	let msg_line = |msg: Value| format!("{}\n", msg);
-
 	// 1. initialize
-	stdin
-		.as_mut()
-		.expect("child stdin is open during initialize")
-		.write_all(
-			msg_line(json!({
-				"jsonrpc": "2.0",
-				"id": 1,
-				"method": "initialize",
-				"params": acp_initialize_params()
-			}))
-			.as_bytes(),
-		)
-		.await?;
+	write_acp_request(
+		stdin
+			.as_mut()
+			.expect("child stdin is open during initialize"),
+		json!({
+			"jsonrpc": "2.0",
+			"id": 1,
+			"method": "initialize",
+			"params": acp_initialize_params()
+		}),
+	)
+	.await?;
 	if let Err(error) =
 		wait_for_response(&mut lines, 1, &mut cancel_rx, ACP_HANDSHAKE_TIMEOUT).await
 	{
@@ -778,19 +811,18 @@ pub async fn run_acp_command(
 	}
 
 	// 2. session/new
-	stdin
-		.as_mut()
-		.expect("child stdin is open during session creation")
-		.write_all(
-			msg_line(json!({
-				"jsonrpc": "2.0",
-				"id": 2,
-				"method": "session/new",
-				"params": acp_new_session_params(workdir)
-			}))
-			.as_bytes(),
-		)
-		.await?;
+	write_acp_request(
+		stdin
+			.as_mut()
+			.expect("child stdin is open during session creation"),
+		json!({
+			"jsonrpc": "2.0",
+			"id": 2,
+			"method": "session/new",
+			"params": acp_new_session_params(workdir)
+		}),
+	)
+	.await?;
 
 	let session_resp =
 		match wait_for_response(&mut lines, 2, &mut cancel_rx, ACP_HANDSHAKE_TIMEOUT).await {
@@ -812,19 +844,16 @@ pub async fn run_acp_command(
 
 	// 3. session/prompt — collect the initial response, then close stdin and
 	// keep consuming updates until the ACP child has drained finite background work.
-	stdin
-		.as_mut()
-		.expect("child stdin is open during prompt")
-		.write_all(
-			msg_line(json!({
-				"jsonrpc": "2.0",
-				"id": 3,
-				"method": "session/prompt",
-				"params": acp_prompt_params(&session_id, task)
-			}))
-			.as_bytes(),
-		)
-		.await?;
+	write_acp_request(
+		stdin.as_mut().expect("child stdin is open during prompt"),
+		json!({
+			"jsonrpc": "2.0",
+			"id": 3,
+			"method": "session/prompt",
+			"params": acp_prompt_params(&session_id, task)
+		}),
+	)
+	.await?;
 
 	let mut output = String::new();
 	// Captured prompt-response error: if the subprocess returns
@@ -1112,7 +1141,7 @@ fn forward_session_update_to_parent(update: &Value) {
 }
 
 /// Mirror a subprocess `session/update` into the tap-run live registry so
-/// `/agents` shows what the run is doing right now — the on-disk snapshot
+/// `/status agents` shows what the run is doing right now — the on-disk snapshot
 /// only flushes after each completed message, which lags long calls.
 fn record_tap_live(run_id: &str, msg: &Value) {
 	// Usage rides in `_meta` next to a SessionInfoUpdate (see acp/agent.rs).
@@ -1300,3 +1329,7 @@ mod inline_tests;
 #[cfg(test)]
 #[path = "functions_command_tests.rs"]
 mod command_tests;
+
+#[cfg(test)]
+#[path = "functions_runtime_tests.rs"]
+mod runtime_tests;

@@ -343,6 +343,12 @@ fn parse_when_accepts_am_pm_seconds_and_midnight_forms() {
 		(with_secs.hour(), with_secs.minute(), with_secs.second()),
 		(15, 30, 45)
 	);
+
+	// Bare 24-hour input in the 12:xx hour must stay noon — the 12am rule
+	// applies only when a meridiem was written (regression: "12:43" → 00:43).
+	let noonish = parse_when("12:43").unwrap();
+	assert_eq!((noonish.hour(), noonish.minute()), (12, 43));
+	assert_eq!(parse_when("12pm").unwrap().hour(), 12, "12pm is noon");
 }
 
 #[test]
@@ -378,5 +384,40 @@ fn parse_when_rejects_malformed_input() {
 	assert!(
 		parse_when("2026-03-22").is_err(),
 		"date without a time part"
+	);
+}
+
+// --- parse_time_of_day: future-today branch ---------------------------------
+
+#[test]
+fn parse_time_of_day_returns_today_when_the_time_is_still_ahead() {
+	use chrono::{Duration, Local, Timelike};
+
+	// Pick a time-of-day ten minutes from now. If that crosses midnight the
+	// function must answer tomorrow instead — assert whichever is expected at
+	// run time so the test is deterministic at any hour.
+	let target = Local::now() + Duration::minutes(10);
+	let hhmm = format!("{:02}:{:02}", target.hour(), target.minute());
+	let parsed = parse_time_of_day(&hhmm).expect("valid HH:MM parses");
+
+	let expected_date = if target.date_naive() == Local::now().date_naive() {
+		Local::now().date_naive()
+	} else {
+		Local::now()
+			.date_naive()
+			.succ_opt()
+			.expect("tomorrow exists")
+	};
+	assert_eq!(
+		parsed.date_naive(),
+		expected_date,
+		"parsed {hhmm} at {:?} → {:?}",
+		Local::now(),
+		parsed
+	);
+	assert_eq!(
+		(parsed.hour(), parsed.minute()),
+		(target.hour(), target.minute()),
+		"time-of-day preserved"
 	);
 }

@@ -80,7 +80,7 @@ const ANSWER_PART_SEPARATOR: &str = "\n\n--- (continued after supervisor feedbac
 /// throws away the actual deliverable and fails a correct turn for "not
 /// delivering" what an earlier part of the same turn already delivered.
 ///
-/// `max_tokens` is the gate's configured budget (`supervisor.gate.max_tokens`).
+/// `max_tokens` is the supervisor profile's output budget (`supervisor.model.max_tokens`).
 fn current_turn_answer(turn_answers: &[String], max_tokens: usize) -> String {
 	// Fill the budget newest-first (an amendment is the most recent state), then
 	// restore chronological order so "later parts amend earlier ones" holds.
@@ -135,7 +135,6 @@ pub async fn execute_api_call_and_process_response<S: OutputSink>(
 	sink: S,
 ) -> Result<()> {
 	let model = chat_session.model.clone();
-	let temperature = chat_session.temperature;
 	let config_clone = config.clone();
 
 	// Calculate animation parameters
@@ -421,28 +420,17 @@ pub async fn execute_api_call_and_process_response<S: OutputSink>(
 	// Make API call. `session.messages` is borrowed directly — no clone — and
 	// the validation params hold that shared borrow only until they're consumed
 	// by `chat_completion_with_validation` below.
-	let max_retries = chat_session.max_retries;
 	let schema = chat_session.schema.clone();
-	let reasoning_effort = chat_session.reasoning_effort;
-	let validation_params = ChatCompletionWithValidationParams::new(
+	let model_profile = chat_session.model_profile(&config_clone);
+	let validation_params = ChatCompletionWithValidationParams::from_profile(
 		&chat_session.session.messages,
-		&model,
-		temperature,
-		chat_session.top_p,
-		chat_session.top_k,
-		chat_session.max_tokens,
+		&model_profile,
 		&config_clone,
 	)
-	.with_max_retries(max_retries)
 	.with_full_context_tokens(true)
 	.with_cancellation_token(operation_rx.clone());
 	let validation_params = if let Some(schema) = schema {
 		validation_params.with_schema(schema)
-	} else {
-		validation_params
-	};
-	let validation_params = if let Some(effort) = reasoning_effort {
-		validation_params.with_reasoning_effort(effort)
 	} else {
 		validation_params
 	};
@@ -582,24 +570,31 @@ pub async fn execute_api_call_and_process_response<S: OutputSink>(
 
 	// Supervisor verify-gate: on self-reported completion, verify before accepting.
 	// On gaps, inject an advisory and re-run the turn (bounded by max_iterations).
+	let pending_async = crate::session::has_pending_async_work();
 	if config.supervisor.gate.enabled {
 		crate::log_debug!(
-			"gate: self_report={:?} iter={}/{} nudges={} needs_verification={}",
+			"gate: self_report={:?} iter={}/{} nudges={} needs_verification={} pending_async={}",
 			chat_session.last_self_report,
 			chat_session.gate_iterations,
 			crate::supervisor::gate::MAX_ITERATIONS,
 			chat_session.nudge_iterations,
 			chat_session
 				.detectors
-				.needs_verification(crate::supervisor::workdir::fingerprint())
+				.needs_verification(crate::supervisor::workdir::fingerprint()),
+			pending_async
 		);
 	}
 	// An explicit `done` self-report claims completion — and so does ending the
 	// turn with no status at all after having changed state: a token the model
 	// forgot must not become an unverified exit (observed: sessions ending with
 	// self_report=None skipped the whole gate). Pure answers (no mutations)
-	// stay ungated, in every mode alike.
+	// stay ungated, in every mode alike. A session-owned background job (or an
+	// unread inbox result) means the turn is a wait, not a completion claim: the
+	// inbox monitor resumes the agent when the result lands, and the gate judges
+	// that later turn instead of accusing this one of delivering a status line.
+	chat_session.gate_deferred = chat_session.completion_gate_eligible && pending_async;
 	if config.supervisor.gate.enabled
+		&& !pending_async
 		&& claims_user_task_completion(
 			chat_session.completion_gate_eligible,
 			chat_session.last_self_report,
@@ -724,7 +719,7 @@ pub async fn execute_api_call_and_process_response<S: OutputSink>(
 		// earlier part of the same turn.
 		let result = current_turn_answer(
 			&chat_session.turn_answers,
-			config.supervisor.gate.max_tokens as usize,
+			config.get_supervisor_model_profile().max_tokens as usize,
 		);
 		let result = if result.is_empty() {
 			chat_session.last_response.clone()

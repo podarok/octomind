@@ -1,100 +1,175 @@
 # Octomind Documentation
 
-**Octomind** is a session-first AI development assistant with built-in MCP tools and multi-provider support.
+Use these guides to install, configure, and operate Octomind's CLI agent runtime, or to contribute to its Rust code.
+Start with a terminal session, then follow the guides for automation, integrations, and development.
 
-## Getting Started
+## Start Here
 
-1. [Installation](usage/01-installation.md) -- install and set up API keys
-2. [Quickstart](usage/02-quickstart.md) -- first session in 5 minutes
-3. [Configuration](usage/03-configuration.md) -- customize settings
+Install the binary and sign in to an Octomind account to use the shipped OctoHub model default:
+
+```bash
+curl -fsSL https://octomind.run/install.sh | bash
+octomind login
+octomind
+```
+
+`octomind login` asks you to confirm a code in the browser and CLI, then stores the hub key in the user-scope
+`config/.env` and account credentials in `config/auth.json`. It does not change your model selection. New configs use
+`assistant:concierge` as the default tag and `octohub:auto` as the model name. See
+[Installation](usage/01-installation.md) and [Quickstart](usage/02-quickstart.md) for the complete setup.
+
+## Configure
+
+Inspect and validate your configuration before adding roles or tools:
+
+```bash
+octomind config --show
+octomind config --validate
+```
+
+The default config is under `~/.local/share/octomind/config/` on Linux/macOS and `%LOCALAPPDATA%/octomind/config/` on
+Windows. `OCTOMIND_DATA_DIR` relocates Octomind state; for example:
+
+```bash
+OCTOMIND_DATA_DIR="$PWD/.octomind-data" octomind config --show
+```
+
+Use [Configuration](usage/03-configuration.md) for file merging and overrides, or [AI
+Providers](usage/04-providers.md#bring-your-own-keys) to supply provider credentials yourself.
+
+## Operate
+
+Create or resume a named interactive session:
+
+```bash
+octomind run --name project-review
+# After exiting, continue the same session:
+octomind run --resume project-review
+```
+
+Inside a session, discover commands and inspect active tools:
+
+```text
+/help
+/mcp
+/exit
+```
+
+For automation, pipe the prompt through stdin and choose `plain` or `jsonl` output:
+
+```bash
+printf '%s\n' 'Summarize the responsibilities of an MCP server in three sentences.' | octomind run --format plain
+```
+
+`run` takes a role/tag positional argument, not a message argument. See [Daemon &
+Hooks](integration/03-daemon-and-hooks.md) for persistent workers and [Workflows](usage/09-workflows.md) for multi-step
+runs.
 
 ## Usage Guide
 
-For users working with Octomind day-to-day.
-
 | Document | Description |
 |----------|-------------|
-| [Installation](usage/01-installation.md) | Install methods, API keys, shell completions |
-| [Quickstart](usage/02-quickstart.md) | Zero to productive session in 5 minutes |
-| [Configuration](usage/03-configuration.md) | Config files, settings, hierarchy |
-| [Providers](usage/04-providers.md) | AI providers, models, caching, costs |
-| [Sessions](usage/05-sessions.md) | Interactive sessions, commands, multimodal |
-| [Roles](usage/06-roles.md) | Roles, permissions, tool access |
-| [MCP Tools](usage/07-mcp-tools.md) | All built-in tools reference |
+| [Installation](usage/01-installation.md) | Recommended setup, alternative installs, and shell completions |
+| [Quickstart](usage/02-quickstart.md) | First session, common commands, and non-interactive use |
+| [Configuration](usage/03-configuration.md) | Config locations, merging, models, roles, and MCP servers |
+| [Providers](usage/04-providers.md) | OctoHub, provider credentials, model selection, and local CLI backends |
+| [Sessions](usage/05-sessions.md) | Interactive sessions, persistence, and multimodal input |
+| [Roles](usage/06-roles.md) | Roles, prompts, permissions, and tool access |
+| [MCP Tools](usage/07-mcp-tools.md) | Built-in tools and runtime tool management |
 | [Compression](usage/08-compression.md) | Automatic context compression |
 | [Workflows](usage/09-workflows.md) | Multi-step AI processing workflows |
-| [Commands & Layers](usage/10-commands-and-layers.md) | Custom commands, layers, agents, prompts |
+| [Commands & Layers](usage/10-commands-and-layers.md) | Custom commands, layers, agents, and prompts |
 | [Structured Output](usage/11-structured-output.md) | JSON Schema output for automation |
-| [Editor Integration](usage/12-editor-integration.md) | Neovim, Zed, JetBrains setup |
+| [Editor Integration](usage/12-editor-integration.md) | Neovim, Zed, and JetBrains setup |
 | [Learning](usage/13-learning.md) | Cross-session adaptive learning |
-| [Supervisor](usage/14-supervisor.md) | Out-of-band control plane: self-report, detectors, verify-gate, learning, orientation |
-| [Skills](usage/15-skills.md) | Auto-expanding skills, capabilities, validators |
-| [Token Efficiency](usage/16-token-efficiency.md) | Capabilities, auto-activation, LRU eviction |
-| [Local Tools](usage/17-local-tools.md) | Project-local shebang scripts auto-exposed as MCP tools |
-| [Guardrails](usage/18-guardrails.md) | Deterministic policy-as-code: pipes, guards, hooks, validators in .agents/guardrails.toml |
+| [Supervisor](usage/14-supervisor.md) | Completion checks, planning, condensation, and learning control |
+| [Skills](usage/15-skills.md) | Auto-activating skills and validators |
+| [Token Efficiency](usage/16-token-efficiency.md) | Context and capability efficiency |
+| [Local Tools](usage/17-local-tools.md) | Project-local scripts exposed as MCP tools |
+| [Guardrails](usage/18-guardrails.md) | Deterministic project policies and hooks |
 
 ## Integration Guide
 
-For building on top of Octomind.
-
 | Document | Description |
 |----------|-------------|
-| [WebSocket Server](integration/01-websocket-server.md) | Remote AI sessions via WebSocket |
-| [ACP Protocol](integration/02-acp-protocol.md) | Agent Client Protocol for tool integration |
-| [Daemon & Hooks](integration/03-daemon-and-hooks.md) | Background sessions, webhook listeners |
-| [Tap System](integration/04-tap-system.md) | Registry for agents, skills, capabilities |
-
-## Development Guide
-
-For contributors to Octomind itself.
-
-| Document | Description |
-|----------|-------------|
-| [Building from Source](dev/01-building-from-source.md) | Rust setup, build, pre-commit hooks |
-| [Architecture](dev/02-architecture.md) | Source modules, internals, patterns |
-| [MCP Server Development](dev/03-mcp-server-development.md) | Building new MCP servers |
+| [WebSocket Server](integration/01-websocket-server.md) | Remote sessions over WebSocket |
+| [ACP Protocol](integration/02-acp-protocol.md) | Agent Client Protocol integration |
+| [Daemon & Hooks](integration/03-daemon-and-hooks.md) | Long-running sessions and webhook listeners |
+| [Tap System](integration/04-tap-system.md) | Agent, skill, capability, and workflow registries |
 
 ## Use Cases
 
-Real-world examples showing how to solve practical problems with Octomind.
+| Document | Description |
+|----------|-------------|
+| [CI/CD Code Review](use-cases/01-ci-cd-code-review.md) | Automated review with structured output |
+| [Event-Driven Agent](use-cases/02-event-driven-agent.md) | Daemon sessions driven by webhooks |
+| [Custom Workflow](use-cases/03-custom-development-workflow.md) | Multi-stage development workflows |
+| [Web Dashboard](use-cases/04-web-dashboard-integration.md) | Embedding sessions through WebSocket |
+| [Multi-Agent Delegation](use-cases/05-multi-agent-delegation.md) | Delegating work to specialized agents |
+| [Dynamic MCP Servers](use-cases/06-dynamic-mcp-servers.md) | Runtime tool-server configuration |
+| [Scheduled Tasks](use-cases/07-scheduled-tasks.md) | Timed messages and recurring work |
+| [Long-Running Development](use-cases/08-long-running-development.md) | Named sessions and resume workflows |
+| [Custom Hooks](use-cases/09-custom-hooks.md) | Script-backed webhook integration |
+| [Safe Agent: Sandbox & Guardrails](use-cases/10-safe-agent-sandbox-and-guardrails.md) | Block destructive commands and verify the agent’s work |
+| [Predictable AI Spend](use-cases/11-keep-ai-spend-predictable.md) | Spending checkpoints, per-role models, and usage reports |
+| [Make “Done” Mean Done](use-cases/12-make-done-mean-done.md) | Supervisor gate, plan checks, and a test validator |
+| [Project Conventions via Skills](use-cases/13-teach-project-conventions-with-skills.md) | Auto-activating skills and convention validators |
+| [Learn from Past Sessions](use-cases/14-learn-from-past-sessions.md) | Carry corrections into the next session |
+| [Project Scripts as Tools](use-cases/15-expose-project-scripts-as-tools.md) | Let the agent run your checks through local tools |
+| [Build & Share a Specialist](use-cases/16-build-and-share-a-specialist-agent.md) | Create, publish, and install a tap agent |
+| [Understand a Codebase](use-cases/17-understand-an-unfamiliar-codebase.md) | Source-backed onboarding to an unfamiliar repo |
+| [Private Code, Local Models](use-cases/18-private-code-with-local-models.md) | Route private roles to Ollama, others to the cloud |
+| [Second Opinion via Fan-out](use-cases/19-compare-models-with-parallel-fanout.md) | Parallel branches and a judge step |
+| [Research with Dynamic Fan-out](use-cases/20-research-a-topic-with-dynamic-fanout.md) | Planner-driven parallel investigations |
+| [Implement–Review–Fix Loop](use-cases/21-implement-review-fix-loop.md) | Bounded graph workflow until review passes |
+| [Release Notes from Git History](use-cases/22-release-notes-from-git-history.md) | Plain drafts and schema-validated release data |
+
+## Development Guide
 
 | Document | Description |
 |----------|-------------|
-| [CI/CD Code Review](use-cases/01-ci-cd-code-review.md) | Automated code review in pipelines with structured output |
-| [Event-Driven Agent](use-cases/02-event-driven-agent.md) | Daemon + webhooks for GitHub, Slack, monitoring |
-| [Custom Workflow](use-cases/03-custom-development-workflow.md) | Multi-stage refine-research-validate pipeline |
-| [Web Dashboard](use-cases/04-web-dashboard-integration.md) | Embed AI assistant via WebSocket server |
-| [Multi-Agent Delegation](use-cases/05-multi-agent-delegation.md) | Parallel specialized agents for complex tasks |
-| [Dynamic MCP Servers](use-cases/06-dynamic-mcp-servers.md) | AI self-configuring tools at runtime |
-| [Scheduled Tasks](use-cases/07-scheduled-tasks.md) | Timed automation, reminders, periodic checks |
-| [Long-Running Development](use-cases/08-long-running-development.md) | Multi-day tasks with session resume |
-| [Custom Hooks](use-cases/09-custom-hooks.md) | Write hooks in any language for any integration |
+| [Building from Source](dev/01-building-from-source.md) | Rust setup and development builds |
+| [Architecture](dev/02-architecture.md) | Source modules and internal flows |
+| [MCP Server Development](dev/03-mcp-server-development.md) | Building MCP servers for Octomind |
+| [Learning Benchmark](dev/05-learning-benchmark.md) | Retrieval and consolidation contract benchmark |
 
-## Troubleshooting
+## Common Questions
+
+If the shell cannot find the binary after the default installation, add the installer directory to your current shell's
+path:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+octomind --version
+```
+
+If login cannot open a local browser, print the URL instead:
+
+```bash
+octomind login --no-browser
+```
+
+If a piped command hangs, ensure its producer closes stdin; Octomind reads the complete prompt before starting. For
+configuration and credential errors, start with `octomind config --validate` above and the guides below.
+
+## Troubleshooting and Reference
 
 | Document | Description |
 |----------|-------------|
-| [Common Issues](troubleshooting/01-common-issues.md) | Installation, config, MCP, session problems |
-| [Migration Guide](troubleshooting/02-migration-guide.md) | Upgrading from legacy config formats |
+| [Common Issues](troubleshooting/01-common-issues.md) | Installation, configuration, provider, and session problems |
+| [Migration Guide](troubleshooting/02-migration-guide.md) | Upgrading legacy configurations |
+| [CLI Reference](reference/01-cli-reference.md) | CLI subcommands and flags |
+| [Session Commands](reference/02-session-commands.md) | Interactive slash commands |
+| [Config Reference](reference/03-config-reference.md) | Configuration fields and defaults |
+| [Environment Variables](reference/04-environment-variables.md) | Credentials, overrides, and runtime variables |
 
-## Reference
+## See also
 
-| Document | Description |
-|----------|-------------|
-| [CLI Reference](reference/01-cli-reference.md) | All CLI commands and flags |
-| [Session Commands](reference/02-session-commands.md) | All interactive session commands (25 distinct, plus /quit and /? aliases) |
-| [Config Reference](reference/03-config-reference.md) | Every configuration field documented |
-| [Environment Variables](reference/04-environment-variables.md) | API keys, overrides, template variables, telemetry |
-
-## Links
-
+- [Architecture](dev/02-architecture.md)
+- [CLI Reference](reference/01-cli-reference.md)
+- [Common Issues](troubleshooting/01-common-issues.md)
 - [GitHub Repository](https://github.com/muvon/octomind)
 - [Issues](https://github.com/muvon/octomind/issues)
 - [Discussions](https://github.com/muvon/octomind/discussions)
-- [Provider Library (octolib)](https://github.com/muvon/octolib)
-
----
-
-**Octomind** -- Session-first AI development assistant
-
-**&copy; 2026 Muvon Un Limited** | Apache License 2.0
+- [Provider Library](https://github.com/muvon/octolib)
+- [OctoHub Gateway](https://github.com/Muvon/octohub)

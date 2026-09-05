@@ -1,5 +1,231 @@
 # Changelog
 
+## [0.50.2] - 2026-09-05
+
+### 📋 Release Summary
+
+Project documentation and agent workflow guidance were substantially reworked and clarified for end users (d8df8eee, a12510b8, 3a53d4c4). Existing behavior was improved with more stable compression decisions, rate-limit-free latest-version resolution during installation, reduced attention overhead, updated registry configuration, and more reliable session spill testing (d6399fc9, c202cf41, 01f179c0, 4c282871, 203c6ae1).
+
+
+### 🔧 Improvements & Optimizations
+
+- **attention**: reduce uncited reference unit tokens `01f179c0`
+- **cargo**: update crates.io registry configuration `4c282871`
+- **spill**: serialize session spill tests `203c6ae1`
+
+### 🐛 Bug Fixes & Stability
+
+- **compression**: stabilize fold decisions `d6399fc9`
+- **install**: resolve latest version without API rate limits `c202cf41`
+
+### 📚 Documentation & Examples
+
+- expand agent workflow guidance `d8df8eee`
+- rework project documentation `a12510b8`
+- **guide**: clarify project workflows `3a53d4c4`
+
+## [0.50.1] - 2026-09-04
+
+### 📋 Release Summary
+
+Improved usage reporting by removing redundant reporting for always-free models (fbbd338f).
+
+
+### 🔧 Improvements & Optimizations
+
+- **usage**: remove always-free model reporting `fbbd338f`
+
+## [0.50.0] - 2026-09-04
+
+### 📋 Release Summary
+
+This release introduces breaking changes to usage pricing and allowance handling (e58f9613). It adds mid-turn system message delivery and session-tree fingerprinting (2154ce2d, 342a830e). Several fixes improve request accounting, session and context handling, truncation, file persistence, supervisor checks, reporting, and local MCP tool retries (a54a6a73, f415f35e, dce8c905, 7a802b96, 6841f5a1, 02cedff7, e69c3bfd, 6bd668e3, 2fe9b675, 175cdf2a, ca9d7d28, 4e420aca, c1d12a0c, 57670ac1, ca126931).
+
+
+### 🚨 Breaking Changes
+
+⚠️ **Important**: This release contains breaking changes that may require code updates.
+
+- **usage**: support pricing v2 allowances `e58f9613`
+
+### ✨ New Features & Enhancements
+
+- **session**: deliver system messages mid-turn `2154ce2d`
+- **workdir**: fingerprint session trees `342a830e`
+
+### 🔧 Improvements & Optimizations
+
+- **workflows**: cancel superseded workflow runs `51603100`
+- **session**: batch inbox processing `2d266b11`
+- **mcp**: clean up stdio server after round trip `892d277e`
+
+### 🐛 Bug Fixes & Stability
+
+- **report**: correct request accounting `a54a6a73`
+- **session**: ignore injected and duplicate turns `f415f35e`
+- **truncation**: preserve idempotence under small caps `dce8c905`
+- **spill**: persist files with session data `7a802b96`
+- **context**: preserve truncation and retry limits `6841f5a1`
+- **supervisor**: hash dirty file contents `02cedff7`
+- **session**: avoid blocking during session init `e69c3bfd`
+- **inbox**: batch results per assistant turn `6bd668e3`
+- **chat**: filter system tags from history output `2fe9b675`
+- **supervisor**: use command intent for runners `175cdf2a`
+- **mcp**: retry busy local tool spawns `ca9d7d28`
+- **supervisor**: classify calls by schema `4e420aca`
+- **supervisor**: use call intent for checks `c1d12a0c`
+- **session**: preserve deferred gate state `57670ac1`
+- **session**: defer completion gate for async work `ca126931`
+
+### 🔄 Other Changes
+
+3 maintenance, dependency, and tooling updates not listed individually.
+
+## [0.49.0] - 2026-09-02
+
+### 📋 Release Summary
+
+Capabilities are now resolved across taps, with improved handling of tap-scoped capabilities (999204cc, c7fa918e). Several fixes improve recall context preservation, cache frontier and TTL behavior, and Windows test and script reliability (b17c9f6b, beb629f8, c0925e33), while runtime documentation has been aligned (a1455833).
+
+
+### 🚨 Breaking Changes
+
+⚠️ **Important**: This release contains breaking changes that may require code updates.
+
+- **agent**: resolve capabilities across taps `999204cc`
+
+### 🔧 Improvements & Optimizations
+
+- **agent**: resolve tap-scoped capabilities `c7fa918e`
+
+### 🐛 Bug Fixes & Stability
+
+- **compression**: preserve recall context `b17c9f6b`
+- **cache**: preserve frontier and clear stale TTLs `beb629f8`
+- **windows**: improve test and script reliability `c0925e33`
+
+### 📚 Documentation & Examples
+
+- align runtime documentation `a1455833`
+
+### 🔄 Other Changes
+
+1 maintenance, dependency, and tooling update not listed individually.
+
+## [0.48.0] - 2026-08-31
+
+### 📋 Release Summary
+
+This release unifies model profiles and overrides, standardizes activity status views, and moves learning storage to a file-backed workflow, requiring configuration and behavior updates (b4ac2640, 87830a65, 783b1b94, 93dc6e37, 0f723d5f, f357e6d3). New capabilities include local tap repository scaffolding, MCP job and resource-link visibility, timing and learning usage metrics, bare-invocation runs, preserved task constraints, and evidence-gated learning evolution (8e09f801, 7dea6224, 6cdf62be, 18cef401, 2b4e7199, 69137fa9, d1436a64). Numerous fixes improve model resolution, asynchronous work handling, MCP and learning reliability, cross-platform behavior, secure sharing, and CI stability (dd317df2, a9072a9a, c5aaf50b, 4acaa9ec, b0214851, 77a899f4, 7d768d76, 3d29f3a7).
+
+
+### 🚨 Breaking Changes
+
+⚠️ **Important**: This release contains breaking changes that may require code updates.
+
+- **config**: simplify model overrides `b4ac2640`
+- **config**: rework model profiles `87830a65`
+- **config**: unify model profiles `783b1b94`
+- **config**: unify model profiles `93dc6e37`
+- **session**: unify activity status views `0f723d5f`
+- **learning**: use file-backed storage `f357e6d3`
+
+### ✨ New Features & Enhancements
+
+- **tap**: scaffold local tap repositories `8e09f801`
+- **session**: show MCP jobs in monitor status `7dea6224`
+- **session**: expose timing metrics `6cdf62be`
+- **cli**: default bare invocation to run `18cef401`
+- **supervisor**: preserve task constraints `2b4e7199`
+- **evolution**: track replay lifecycle metrics `092a79fd`
+- **learning**: add evidence-gated evolution `d1436a64`
+- **session**: persist learning usage stats `a27bf0c7`
+- **session**: report learning pack usage `15eab027`
+- **learning**: manage memory retention lifecycle `5db15e08`
+- **learning**: rework memory workflows `fcc6943f`
+- **supervisor**: adapt condensation thresholds `1599f965`
+- **mcp**: implement resource link watching and delivery `69137fa9`
+
+### 🔧 Improvements & Optimizations
+
+- **chat**: isolate clipboard probing in tests `16d05892`
+- **commands**: gate Unix-specific test helpers `bb69c980`
+- **config**: update empty model error assertion `0c1fa326`
+- **runtime**: simplify conversions and errors `993c7fe5`
+- **model**: align roles with main profile `18c91e40`
+- **ci**: update Rust toolchain to 1.98.0 `7967883c`
+- **suites**: stabilize cross-platform tests `4d9e23fd`
+- **coverage**: broaden runtime module coverage `3354950c`
+- **supervisor-config**: behavioral coverage for supervisor and config loading/guardrails `0e2e2d25`
+- **mcp-infra**: behavioral coverage for client, server, mod, health_monitor, hint_accumulator `fcfe30ac`
+- **agent-orchestration**: behavioral coverage for agent and orchestration modules `688ab5b0`
+- **mcp-runtime**: cover capability env gating/LRU/broken-taps, skill_auto pool+validators, skill discovery/capability/plugin branches `b69e8f04`
+- **workflow**: cover executor failure paths, graph/structural validation, run_step classification, tap execute `ede0dca7`
+- **session-loop**: cover main_loop run-mode paths, core session methods, /run success+thresholds, /usage, message handler, api executor gates `0038dbd8`
+- **tests**: extract inline tests `807f28a4`
+- **session**: expand behavior coverage `04cae32d`
+- **runtime**: expand MCP and session coverage `a5c95945`
+- **mcp**: remove unused debug import `1dec6083`
+- **logging**: consolidate diagnostics `2f2afc04`
+- **session**: format assistant message call `c37f8ca4`
+- **session**: cover lifecycle and command flows `bff39908`
+- **integration**: exercise phases and commands `1fb0333b`
+- **telemetry**: verify session event counters `eb1af59d`
+- **compression**: verify long pace schedules background fold `96fd8f30`
+- **commands**: refine server and tap assertions `ca218052`
+- **commands**: verify spinner finish behavior `b36fd85f`
+- **commands**: align CLI and rendering tests `55b5199c`
+- **commands**: align CLI and server parsing tests `b5bc3aff`
+- **mcp**: reset health monitor state between tests `d645805d`
+- **chat**: accept permission denied errors `ab1d94a3`
+- **session**: update tests for async context display `14defcf9`
+- **core**: expand Rust module coverage `3ce770ef`
+- **learning**: align dense retrieval scoring `475f4822`
+- **tap**: make runs always asynchronous `1d70aa75`
+- **session**: align working directory test setup `7edccc0c`
+- **core**: expand Rust module coverage `e1796251`
+- **session**: ignore foreign events in assertions `89d8f041`
+
+### 🐛 Bug Fixes & Stability
+
+- **tests**: improve macOS CI reliability `3d29f3a7`
+- **chat**: skip clipboard probe in tests `504fb600`
+- **acp**: handle child exit during request writes `e66c4512`
+- **models**: honor resolved model profiles `dd317df2`
+- **async**: bound subprocess and test waits `5418eab6`
+- **telemetry**: detect alternate target dirs `9162a58b`
+- **agent**: normalize dependency script paths on Windows `cabbd83f`
+- **mcp**: handle stale local tool mappings `4acaa9ec`
+- **paths**: handle platform-specific paths `77a899f4`
+- **role**: resolve explicit role argument `38de5b1a`
+- **share**: use secure bridge tokens `7d768d76`
+- **runtime**: preserve tool metadata and args `ff5e3843`
+- **learning**: validate orientation evidence `648f3bbd`
+- **compression**: preserve learning context `686560e9`
+- **stats**: count reasoning tokens in throughput `edd110ec`
+- **commands**: hide spinner output during tests `bf310b68`
+- **test**: resolve clippy lints and flaky embedding test in CI `6565258a`
+- **session**: preserve pending async work handbacks `a9072a9a`
+- **test**: correct role switch test to expect success with save failure `2203ebd5`
+- **session**: preserve pending jobs through delivery `c5aaf50b`
+- **acp**: wait for pending work before exit `642d1aad`
+- **session**: initialize learning statistics `ce4a403a`
+- **mcp**: gate Unix-specific script tests `23c15551`
+- **learning**: improve retrieval ranking `b0214851`
+- **session**: preserve background tap-runs `9009b6de`
+- **supervisor**: cap results before condensing `bdaed34f`
+- **schedule**: preserve entry id during rescheduling `2fd154cc`
+
+### 📚 Documentation & Examples
+
+- **learning**: document debug retrieval logging `be5ffbd5`
+- **readme**: clarify coding agent branding `4e9543e5`
+- **telemetry**: clarify supervisor stats boundaries `3299b1e7`
+
+### 🔄 Other Changes
+
+9 maintenance, dependency, and tooling updates not listed individually.
+
 ## [0.47.0] - 2026-08-26
 
 ### 📋 Release Summary

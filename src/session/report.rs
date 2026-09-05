@@ -23,6 +23,11 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
+/// Width of the request column in the rendered table. Requests are truncated
+/// to it once, here, so the renderer never has to clip a second time (two caps
+/// meant every row ended in `...` well short of the column edge).
+pub const REQUEST_CELL_WIDTH: usize = 42;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionReport {
 	pub entries: Vec<ReportEntry>,
@@ -89,6 +94,13 @@ impl SessionReport {
 			}
 		}
 
+		// Compression snapshots re-append the surviving messages to the log
+		// (see `log_compression_point`), so the same turn appears once per fold.
+		// A re-logged message keeps its role, timestamp and content — dedupe on
+		// those, or requests and their tool calls are counted many times over.
+		let mut seen_messages: std::collections::HashSet<(&str, u64, &str)> =
+			std::collections::HashSet::new();
+
 		// Process entries and track cost/time
 		for log_entry in all_entries.iter() {
 			// User messages are persisted as `Message` structs with `role:"user"` (no
@@ -96,18 +108,42 @@ impl SessionReport {
 			// them up alongside `{"type":"COMMAND",…}` entries. Without this, /report
 			// only ever shows slash commands and skips real chat turns.
 			let role = log_entry.get("role").and_then(|r| r.as_str()).unwrap_or("");
+			let content = log_entry
+				.get("content")
+				.and_then(|c| c.as_str())
+				.unwrap_or("");
 			let log_type = log_entry
 				.get("type")
 				.and_then(|t| t.as_str())
-				.unwrap_or_else(|| if role == "user" { "USER" } else { "" });
+				.unwrap_or_else(|| {
+					// Only a genuine user turn opens a new row. Skills, `<system-note>`,
+					// supervisor steers and continuation wrappers are injected with
+					// `role:"user"` too; counting them fills the table with generated
+					// requests and splits the real one's cost across dozens of rows.
+					if role == "user"
+						&& !content.trim().is_empty()
+						&& !crate::session::is_system_managed_user_content(content)
+					{
+						"USER"
+					} else {
+						""
+					}
+				});
 			let entry_timestamp = log_entry
 				.get("timestamp")
 				.and_then(|t| t.as_u64())
 				.unwrap_or(0);
 
+			// Markers (SUMMARY, COMMAND, …) may legitimately repeat; only messages
+			// are re-appended verbatim by compression snapshots.
+			if !role.is_empty() && !seen_messages.insert((role, entry_timestamp, content)) {
+				continue;
+			}
+
 			match log_type {
 				"STATS" => {
-					// Update last known totals from session stats
+					// Running totals checkpointed at a request boundary — this is what
+					// closes the previous request's cost/time window.
 					if let Some(total_cost) = log_entry.get("total_cost").and_then(|c| c.as_f64()) {
 						last_total_cost = total_cost;
 					}
@@ -184,10 +220,11 @@ impl SessionReport {
 							}
 						}
 					}
-					// SUMMARY entries carry the running totals via `session_info`. STATS
-					// entries are only emitted in tests, so SUMMARY is the *only* place
-					// real sessions get their time/cost rollup from. Pull cost AND time
-					// fields here — without the time pulls, ai/processing always read 0ms.
+					// SUMMARY entries carry the running totals via `session_info`. They
+					// land only on `save()`, which is coarser than one per request —
+					// `log_stats_checkpoint` fills the gaps with STATS at every request
+					// boundary. Pull cost AND time here; without the time pulls,
+					// ai/processing read 0ms whenever a SUMMARY closes the window.
 					if let Some(session_info) = log_entry.get("session_info") {
 						if let Some(total_cost) =
 							session_info.get("total_cost").and_then(|c| c.as_f64())
@@ -295,7 +332,7 @@ impl SessionReport {
 			);
 
 			entries.push(ReportEntry {
-				user_request: Self::truncate_request(&ctx.user_request, 35),
+				user_request: Self::truncate_request(&ctx.user_request, REQUEST_CELL_WIDTH),
 				cost: format!("{:.5}", cost_delta),
 				tool_calls,
 				tools_used,
@@ -322,12 +359,25 @@ impl SessionReport {
 		tool_list.join(", ")
 	}
 
-	/// Truncate long user requests for table display
+	/// Flatten a request to one line and truncate it for table display.
+	/// Pasted input arrives indented and multi-line; without flattening the cap
+	/// is spent on leading whitespace and the row shows nothing but "...".
 	fn truncate_request(request: &str, max_len: usize) -> String {
-		if request.chars().count() <= max_len {
-			request.to_string()
+		let mut flat = String::with_capacity(request.len());
+		let mut prev_space = false;
+		for c in request.chars() {
+			let is_space = c.is_whitespace();
+			if is_space && (prev_space || flat.is_empty()) {
+				continue;
+			}
+			flat.push(if is_space { ' ' } else { c });
+			prev_space = is_space;
+		}
+		let flat = flat.trim_end();
+		if flat.chars().count() <= max_len {
+			flat.to_string()
 		} else {
-			let truncated: String = request.chars().take(max_len - 3).collect();
+			let truncated: String = flat.chars().take(max_len - 3).collect();
 			format!("{}...", truncated)
 		}
 	}

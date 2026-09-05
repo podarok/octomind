@@ -69,14 +69,15 @@ impl FoldEconomics {
 
 	pub(super) fn resolve(session: &ChatSession, config: &crate::config::Config) -> Self {
 		let session_pricing = get_model_pricing(&session.model, config);
-		let folder_pricing = get_model_pricing(&config.compression.decision.model, config);
+		let compression_profile = config.get_compression_model_profile();
+		let folder_pricing = get_model_pricing(&compression_profile.model, config);
 		if session_pricing.is_none() || folder_pricing.is_none() {
 			crate::log_info!(
 				"Fold economics: no pricing for {} — using default ratios",
 				if session_pricing.is_none() {
 					&session.model
 				} else {
-					&config.compression.decision.model
+					&compression_profile.model
 				}
 			);
 		}
@@ -210,7 +211,7 @@ pub(super) fn ceiling_reached(
 /// (such a session cannot make API calls anyway).
 pub(super) fn context_ceiling(session: &ChatSession, config: &crate::config::Config) -> usize {
 	let model_bound = crate::session::model_max_input_tokens(&session.model)
-		.map(|window| window.saturating_sub(config.max_tokens as usize));
+		.map(|window| window.saturating_sub(session.max_tokens as usize));
 	match (config.max_session_tokens_threshold, model_bound) {
 		(0, Some(bound)) => bound,
 		(0, None) => usize::MAX,
@@ -360,3 +361,7 @@ mod pacing_tests;
 #[cfg(test)]
 #[path = "decision_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "policy_replay_tests.rs"]
+mod policy_replay_tests;

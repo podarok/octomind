@@ -1,297 +1,301 @@
 # Configuration
 
-Octomind uses TOML configuration files stored in a platform-specific data directory.
+Configure Octomind's models, tools, and runtime limits. This guide covers file locations, merge order, and overrides for
+users maintaining their own TOML configuration.
 
-This page covers the config file format, where it lives, and how settings resolve. Deeper topics live in their own docs: [Roles and Permissions](06-roles.md), [Compression](08-compression.md), [Providers](04-providers.md), and [Learning](13-learning.md).
+## Create and Inspect the Configuration
+
+Octomind creates the default configuration automatically when no TOML configuration exists. You can also create or
+inspect it explicitly:
+
+```bash
+octomind config             # create config.toml when absent
+octomind config --show      # display key effective settings
+octomind config --validate  # validate the merged configuration
+octomind config --upgrade   # run the current migration explicitly
+```
+
+The default template is embedded in the binary from `config-templates/default.toml`. Older configurations are upgraded
+automatically during load; a migration writes a versioned backup beside the original before replacing it.
 
 ## File Locations
 
-| Platform | Data Directory | Config File |
-|----------|---------------|-------------|
+| Platform | Data directory | Main config file |
+|----------|----------------|------------------|
 | macOS | `~/.local/share/octomind/` | `~/.local/share/octomind/config/config.toml` |
 | Linux | `~/.local/share/octomind/` | `~/.local/share/octomind/config/config.toml` |
 | Windows | `%LOCALAPPDATA%/octomind/` | `%LOCALAPPDATA%/octomind/config/config.toml` |
 
-Full directory structure:
-```
-~/.local/share/octomind/
-  config/
-    config.toml           # Main configuration
-    *.toml                # Additional config files (merged)
-  sessions/               # Saved sessions
-  logs/                   # Debug and error logs
-  cache/                  # Cached data
-  keystore.json           # OAuth tokens for remote MCP servers (mode 0600)
-  learning/               # Cross-session adaptive learning (lessons), scoped by project/role
-  agents/                 # Cached tap agent manifests (<category>/<variant>.toml)
-```
+The data directory also contains saved sessions, logs, cache data, taps, and learning records. Two environment variables
+relocate configuration and state:
 
-Override the config location with the `OCTOMIND_CONFIG_PATH` environment variable. It points to a config **file**; its parent directory becomes the merge directory (all `*.toml` files there are loaded — see [Multi-File Configuration](#multi-file-configuration)).
+| Variable | Effect |
+|----------|--------|
+| `OCTOMIND_DATA_DIR` | Replaces the platform data directory for config and other persistent state |
+| `OCTOMIND_CONFIG_PATH` | Selects a specific main config file; its parent becomes the multi-file merge directory |
 
-## Getting Started
-
-Generate a default configuration:
+For a separate persistent setup, set the data directory before starting Octomind:
 
 ```bash
-octomind config
+OCTOMIND_DATA_DIR="$HOME/.local/share/octomind-demo" octomind config --show
 ```
 
-On first run this writes `config.toml` to `~/.local/share/octomind/config/`. The template is **embedded in the binary** at build time (the repo's `config-templates/default.toml` is the source of truth — it is not a file on your machine). After first launch, the on-disk file is authoritative: edits you make there are what Octomind loads.
-
-Verify and maintain your configuration:
+To load an existing alternate configuration, use its absolute path. All TOML files alongside it also load:
 
 ```bash
-octomind config --show      # Display the effective (merged) settings
-octomind config --validate  # Check for errors
-octomind config --upgrade   # Migrate an old config to the current version
+OCTOMIND_CONFIG_PATH="$HOME/.config/octomind/config.toml" octomind config --validate
 ```
 
-`--upgrade` migrates an existing config to the latest version and writes a backup to `config.toml.backup`. Upgrades also run automatically on load whenever the file's `version` is older than the current one.
+`OCTOMIND_CONFIG_PATH` does not relocate credentials: the user `.env` remains under `<data-dir>/config/`. Host-local
+sockets and PID files use the system runtime/temp directory rather than `OCTOMIND_DATA_DIR`.
 
-## How Settings Resolve
-
-Two separate mechanisms decide the effective configuration: how the **files** merge, and how the **model** is chosen.
-
-**File merge (last wins).** All `*.toml` files in the config directory are merged into one config. `config.toml` loads first, then the rest alphabetically, with `mcp-*.toml` files loaded **last** as overrides (see [Multi-File Configuration](#multi-file-configuration)). When two files set the same scalar, the later file wins; arrays of tables (`[[mcp.servers]]`, `[[roles]]`) are concatenated and same-name entries are deduplicated keeping the last occurrence. There is no separate runtime "defaults" tier — the embedded template is copied to disk once on first run, after which the on-disk file *is* the config.
-
-**Model selection (precedence chain).** The model is the one field with a real precedence order:
-
-```
-CLI --model  >  role.model  >  config.model (root)
-```
-
-A plain `[[roles]]` entry's `model` is honored directly — `octomind run <role>` uses it over the root `config.model` (CLI `--model` still wins). For a tap agent (`category:variant`), a `[taps]` entry for that tag overrides the `config.model` tier, so it applies only when neither `--model` nor the agent's own role sets a model. See [Tap Model Overrides](#tap-model-overrides). (Resolution happens in `src/session/chat/session/core.rs`: `CLI --model ?? role.model ?? config.model`.)
+With a custom config path, `config --show` still labels its output with the standard config path, and
+`config --upgrade` targets that standard path. Normal loading migrates the selected custom file automatically.
 
 ## Core Settings
 
-```toml
-# Config version (do not modify)
-version = 1
+The shipped root settings begin with the following. Edit these existing keys before any TOML table header; do not append
+them beneath `[model]`. Leave `version` to the migration system.
 
-# Logging: "none", "info", "debug"
+```toml
+version = 12
 log_level = "info"
-
-# Default model (provider:model format)
-model = "openrouter:anthropic/claude-sonnet-4"
-
-# Default tag when no TAG passed to `octomind run`
 default = "assistant:concierge"
-
-# Global max tokens
-max_tokens = 16384
-
-# Reasoning effort hint for thinking-capable models (ignored by others)
-reasoning_effort = "medium"  # low | medium | high | xhigh | max
-
-# Sandbox mode: restrict writes to working directory
 sandbox = false
-```
+telemetry = true
 
-The default tag `assistant:concierge` is a **tap agent** (`category:variant`) provided by the built-in default tap `muvon/tap`, not the local `[[roles]]` `assistant` definition.
-
-`reasoning_effort` is a system-wide hint mapped by each provider to its native thinking knob (effort string, budget tokens, etc.); models without thinking support silently ignore it. You can also change it per-session at runtime with the `/effort` command, which persists the choice in the session file.
-
-## Project Instructions
-
-Octomind auto-loads `AGENTS.md` from the project root as a user message in new sessions, following the [AGENTS.md standard](https://agents.md). No configuration needed — the file is loaded whenever it exists.
-
-## Performance Settings
-
-```toml
-# Hard limit on MCP response tokens (0 = unlimited)
 mcp_response_tokens_threshold = 20000
-
-# Max tokens per session before truncation (0 = disabled)
 max_session_tokens_threshold = 200000
-
-# Prompt-cache keepalive (Anthropic-only, opt-in): ping the provider while the
-# session idles so the next turn still hits the cache. Each ping costs cache-read tokens.
 cache_keepalive_enabled = false
-cache_keepalive_max_idle_seconds = 1800  # 0 = ping until session ends
+cache_keepalive_max_idle_seconds = 1800
 
-# Automatically activate capabilities whose triggers match the user message
-auto_capabilities = true
-
-# Retry configuration
-max_retries = 1
-retry_timeout = 30
-
-# Per-request HTTP timeout (0 = no timeout)
-request_timeout_seconds = 300
-```
-
-Cache keepalive only applies to providers whose API supports refresh-on-read (today, Anthropic). Other providers are skipped, so enabling it does no harm but has no effect for them. Set `auto_capabilities = false` to require explicit `capability(action="enable")` calls instead of automatic matching.
-
-**Validation limits** (`octomind config --validate` enforces these):
-
-- `max_session_tokens_threshold` <= 2,000,000
-- `cache_keepalive_max_idle_seconds` <= 86400 (24h), or 0 for unbounded
-- MCP server and webhook hook timeouts must be > 0 and <= 3600 seconds
-- `model` and `markdown_theme` must be non-empty; role `temperature` 0.0-2.0, `top_p` 0.0-1.0, `top_k` 1-1000
-
-## User Interface
-
-```toml
-# Markdown rendering for AI responses
 enable_markdown_rendering = true
-
-# Theme: default, dark, light, ocean, solarized, monokai
 markdown_theme = "default"
-
-# Spending limits in USD (0.0 = no limit)
 max_session_spending_threshold = 0.0
 max_request_spending_threshold = 0.0
+auto_capabilities = true
 ```
 
-List available themes: `octomind config --list-themes`
+The `default` value is the tag used when `octomind run` receives no tag. `assistant:concierge` comes from the built-in
+`muvon/tap`; it is distinct from the local `assistant` role in `[[roles]]`.
 
-## MCP Servers
+List themes and select one with:
 
-Configure MCP tool servers in the `[mcp]` section:
-
-```toml
-[mcp]
-allowed_tools = []  # Global restrictions (empty = none)
-
-# Built-in servers (always available)
-[[mcp.servers]]
-name = "core"
-type = "builtin"
-timeout_seconds = 30
-tools = []
-
-[[mcp.servers]]
-name = "runtime"
-type = "builtin"
-timeout_seconds = 30
-tools = []
-
-[[mcp.servers]]
-name = "agent"
-type = "builtin"
-timeout_seconds = 30
-tools = []
-
-# External stdio server
-[[mcp.servers]]
-name = "octocode"
-type = "stdio"
-command = "octocode"
-args = ["mcp", "--path=."]
-timeout_seconds = 240
-tools = []
-
-# External HTTP server
-[[mcp.servers]]
-name = "github_mcp"
-type = "http"
-url = "https://api.github.com/mcp"
-timeout_seconds = 30
-tools = []
+```bash
+octomind config --list-themes
+octomind config --markdown-theme dark
 ```
 
-The four built-in servers shipped in the default config are `core` (conditional `recall`), `orchestration` (`tap`, `schedule`, `monitor`), `runtime` (`mcp`, `agent`, `skill`, `capability`), and `agent` (configured `agent_<name>` tools). Planning is supervisor-internal rather than an MCP tool.
+For every root field and validation rule, see the [Configuration Reference](../reference/03-config-reference.md).
 
-See [MCP Tools Reference](07-mcp-tools.md) for complete tool documentation.
+## Model Profiles and Purposes
 
-## Roles
+Octomind has exactly three request purposes:
 
-Define roles in `[[roles]]` sections:
+| Purpose | Configuration | Used for |
+|---------|---------------|----------|
+| `main` | `[model]` | The active session conversation and its cache keepalive |
+| `supervisor` | `[supervisor.model]` | Gate, resolution, planning, condensation, and learning calls |
+| `compression` | `[compression.model]` | Conversation-compression decisions and summaries |
+
+The main profile is complete and is the inheritance baseline:
 
 ```toml
-[[roles]]
-name = "assistant"
+[model]
+name = "octohub:auto"
+reasoning_effort = "medium"
+max_tokens = 32768
 temperature = 0.3
 top_p = 0.7
 top_k = 20
-system = "You are a helpful assistant. Working directory: {{CWD}}"
-welcome = "Hello! Working in {{CWD}}"
-
-[roles.mcp]
-server_refs = ["core", "runtime", "filesystem", "agent"]
-allowed_tools = ["core:*", "runtime:*", "filesystem:*", "agent:*"]
+max_retries = 1
+retry_timeout = 30
+request_timeout_seconds = 300
 ```
 
-See [Roles and Permissions](06-roles.md) for detailed role configuration.
+`[supervisor.model]`, `[compression.model]`, and `[roles.model]` accept the same fields as partial overrides; omitted
+values inherit from `[model]`. The shipped template gives supervisor and compression their own complete profiles, both
+named `octohub:auto`.
+
+Model names must use `provider:model`. For the interactive CLI, model-name precedence is:
+
+```text
+runtime override > active role profile > tap model mapping > main [model]
+```
+
+For example, after configuring the provider credential:
+
+```bash
+octomind run -m 'openai:gpt-5.6-sol'
+```
+
+This changes the session model name. Supervisor and compression keep their own model profiles; configure those too when
+moving away from OctoHub. See [AI Providers](04-providers.md#bring-your-own-keys).
+
+## Roles and Tags
+
+A plain tag selects a local `[[roles]]` entry; a tag containing `:` resolves a tap manifest. See [Roles](06-roles.md)
+for complete examples, profile inheritance, and tool permissions.
+
+## MCP Servers
+
+The default registry declares four built-in MCP servers:
+
+| Server | Tool group |
+|--------|------------|
+| `core` | `recall` when compression attention or its governance is enabled; planning is supervisor-internal |
+| `orchestration` | Tap, schedule, and monitor tools |
+| `runtime` | MCP, agent, skill, and capability management |
+| `agent` | Tools generated from configured `[[agents]]` entries |
+
+External servers use `http` or `stdio`. For stdio, set `PROJECT_MCP_COMMAND` to the absolute path of your installed MCP
+server executable; this example assumes it speaks MCP on stdio without arguments. Add its required arguments to `args`
+if needed. Export the path in the shell that will launch Octomind (replace the user-supplied path):
+
+```bash
+export PROJECT_MCP_COMMAND="/path/to/installed/mcp-server"
+```
+
+Save this definition as `mcp-project.toml` in the config directory:
+
+```toml
+[[mcp.servers]]
+name = "project_tools"
+type = "stdio"
+command = "{{ENV:PROJECT_MCP_COMMAND}}"
+args = []
+timeout_seconds = 30
+tools = []
+auto_bind = ["developer:general"]
+```
+
+Then start the matching role and inspect the server:
+
+```bash
+octomind run developer:general
+```
+
+```text
+/mcp
+```
+
+`auto_bind` matches exact role strings: `developer` does not match `developer:general`. For a newly added reference, it
+also adds a `project_tools:*` grant when the role has a nonempty allowlist. Registration alone does not enable a server;
+use `auto_bind` or a role's `server_refs`. HTTP header values support `{{ENV:KEY}}`; without an explicit `Authorization`
+header, the HTTP client can
+use MCP authorization discovery. See [MCP Tools](07-mcp-tools.md) and [Config
+Reference](../reference/03-config-reference.md#mcp) for HTTP setup.
 
 ## Multi-File Configuration
 
-All `*.toml` files in the config directory are merged:
+Octomind merges every `*.toml` file in the selected config directory:
 
-1. `config.toml` loaded first
-2. Other files loaded alphabetically
-3. Files matching `mcp-*.toml` are loaded **last** (as overrides), regardless of alphabetical order, so they win on same-name `[[mcp.servers]]` entries (e.g. to add `auto_bind` to a server defined earlier). Note: `mcp.toml` (no dash) is a regular file loaded in normal alphabetical order.
-4. Array entries (`[[mcp.servers]]`, `[[roles]]`, etc.) are concatenated
-5. Same-name entries are deduplicated (last wins)
-6. Scalar values are overridden by later files
+1. `config.toml` loads first.
+2. Other regular TOML files load alphabetically.
+3. Files named `mcp-*.toml` load last; `mcp.toml` is a regular file.
+4. Tables merge recursively and later scalar values replace earlier ones.
+5. Arrays of tables are concatenated; entries with the same `name` are deduplicated with the last entry kept.
+6. Other arrays are replaced by the later value.
 
-This lets you organize by concern:
+This makes a file such as `mcp-project.toml` an explicit override for a same-named server declared earlier. The last
+same-named array entry replaces the whole entry, so repeat all required server or role fields. Only the literal filename
+`config.toml` gets first priority, even with `OCTOMIND_CONFIG_PATH` set.
+
+For example, put this partial override in `settings.toml` alongside `config.toml`, then validate the merged result:
+
+```toml
+log_level = "debug"
+
+[model]
+reasoning_effort = "high"
 ```
-config/
-  config.toml          # Core settings
-  mcp-github.toml      # GitHub MCP server
-  roles-custom.toml    # Project-specific roles
+
+```bash
+octomind config --validate
 ```
 
-## Capability Overrides
+## Tap and Capability Overrides
 
-For tap agents, override which provider handles specific capabilities:
+`[capabilities]` selects a provider file inside a tap. When a capability has no override, its provider name is
+`default`:
 
 ```toml
 [capabilities]
 codesearch = "octocode"
 ```
 
-Each key is a capability name and the value is the provider to use. It resolves to `capabilities/<capability>/<provider>.toml` within the tap — so the example maps to `capabilities/codesearch/octocode.toml`. When no override is given for a capability, the provider defaults to `default` (i.e. `capabilities/<capability>/default.toml`).
-
-## Tap Model Overrides
+`[taps]` changes only the model name for a tap tag; the rest of the main model profile remains inherited until an active
+role profile overrides it:
 
 ```toml
 [taps]
-"developer:general" = "ollama:glm-5"
-"octomind:assistant" = "openai:gpt-4o"
+"developer:general" = "ollama:glm-5.3"
 ```
 
-**Model resolution priority:**
-1. CLI `--model` flag
-2. The active role's `model` field (a plain `[[roles]]` entry, or a tap agent's manifest role)
-3. Global `model` in config — which a `[taps]` entry overrides for a tap agent's tag
-
-A plain `[[roles]]` entry's `model` is honored directly. The `[taps]` override only applies to tap agents (tags with `:` like `developer:general`) and acts at the `config.model` tier — it takes effect when the agent's own role does not set a model.
-
-## Template Variables
-
-System prompts and welcome messages support variables:
-
-| Variable | Description |
-|----------|-------------|
-| `{{CWD}}` | Current working directory |
-| `{{ROLE}}` | Active role name (`unknown` when no role is set) |
-| `{{DATE}}` | Current date (with timezone) |
-| `{{SHELL}}` | User's shell |
-| `{{BINARIES}}` | Available binaries in PATH |
-| `{{OS}}` | Operating system |
-| `{{HOME}}` | User's home directory path |
-| `{{GIT_STATUS}}` | Git status (empty outside a git repo) |
-| `{{GIT_TREE}}` | Project file tree (empty outside a git repo) |
-| `{{README}}` | Project README.md contents (empty if absent) |
-| `{{SYSTEM}}` | Combined system info block: date, shell, OS, binaries, CWD |
-| `{{CONTEXT}}` | Combined project context block: README + git status + git tree (empty outside a git repo) |
-
-`{{SYSTEM}}` and `{{CONTEXT}}` are the composites the default `task_refiner`/`task_researcher`/`reduce` roles rely on. The git/README variables (and `{{CONTEXT}}`) resolve to an **empty string** when the project has no git repo or no README, so prompts that use them stay valid either way.
-
-Inspect actual values with the `vars` command at three verbosity levels:
+These examples require the selected capability provider file in a tap and the selected model in Ollama. Apply either
+override to the existing table, then run:
 
 ```bash
-octomind vars            # list variable names
-octomind vars --preview  # 3-line preview of each value (-p)
-octomind vars --expand   # full expanded values (-e)
+octomind run developer:general
 ```
 
-## Further Reading
+## Project Instructions and Template Variables
 
-- [Configuration Reference](../reference/03-config-reference.md) -- every config field documented
-- [Environment Variables](../reference/04-environment-variables.md) -- API keys and overrides
-- [Providers](04-providers.md) -- AI provider setup
-- [Compression](08-compression.md) -- compression configuration
-- [Workflows](09-workflows.md) -- workflow configuration
+When `AGENTS.md` exists in the working directory, Octomind loads its non-empty contents into a new session as project
+instructions and expands the same placeholders used by role `system` and `welcome` text.
+
+For example, place this text in your project's `AGENTS.md`:
+
+```text
+Working directory: {{CWD}}
+Explain your proposed changes before editing files. Preserve unrelated changes.
+```
+
+| Placeholder | Value |
+|-------------|-------|
+| `{{CWD}}` | Current working directory |
+| `{{ROLE}}` | Active role, or `unknown` when no role was supplied to expansion |
+| `{{DATE}}` | Current date and timezone |
+| `{{SHELL}}` | Current shell information |
+| `{{OS}}` | Operating-system information |
+| `{{BINARIES}}` | Detected development tools |
+| `{{GIT_STATUS}}` | Git status, or an empty string when unavailable |
+| `{{GIT_TREE}}` | Project file tree, or an empty string when unavailable |
+| `{{README}}` | Root README content, or an empty string when unavailable |
+| `{{SYSTEM}}` | Combined shell, OS, directory, and tool information |
+| `{{CONTEXT}}` | Combined README, Git status, and file-tree context |
+
+Inspect context values with:
+
+```bash
+octomind vars            # list names
+octomind vars --preview  # preview values (-p)
+octomind vars --expand   # print full values (-e)
+```
+
+`octomind vars` additionally reports `{{HOME}}`, but `{{HOME}}` is not expanded in role prompts or `AGENTS.md`.
+Conversely, role prompt expansion supports `{{ROLE}}`, while the standalone `vars` command has no active role value to
+list.
+
+## Troubleshooting
+
+**Why is a config edit ignored?** Check later files in the merge directory, and check whether the key is beneath the
+right table header. Validate after editing:
+
+```bash
+octomind config --validate
+octomind config --show
+```
+
+**Why does my exported credential lose to another value?** Loading order is shell environment, user
+`<data-dir>/config/.env`, then working-directory `.env`; each later file overrides earlier values. See [AI
+Providers](04-providers.md#environment-file-precedence) for examples.
+
+## See also
+
+- [Configuration Reference](../reference/03-config-reference.md) — complete field reference
+- [Environment Variables](../reference/04-environment-variables.md) — runtime and credential variables
+- [AI Providers](04-providers.md) — model gateways and provider setup
+- [Compression](08-compression.md) — compression behavior and configuration
+- [Supervisor](14-supervisor.md) — supervisor behavior and configuration
+- [Workflows](09-workflows.md) — external workflow configuration

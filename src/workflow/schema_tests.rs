@@ -342,3 +342,22 @@ fn edge_deserializes_with_and_without_condition() {
 	assert_eq!(when.matches.as_deref(), Some("ok|passed"));
 	assert_eq!(when.contains, None);
 }
+
+#[test]
+fn workflow_model_remains_a_scalar_name_override() {
+	let workflow: WorkflowDef = toml::from_str(
+		r#"
+		name = "legacy"
+		[[steps]]
+		name = "run"
+		role = "developer"
+		prompt = "go"
+		model = "google:gemini-3-pro"
+		"#,
+	)
+	.unwrap();
+	let Step::Sequential(step) = &workflow.steps[0] else {
+		panic!("expected sequential step");
+	};
+	assert_eq!(step.model.as_deref(), Some("google:gemini-3-pro"));
+}

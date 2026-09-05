@@ -299,6 +299,14 @@ impl ChatSession {
 		// purely in-memory and do not need to be reflected in the persisted JSON
 		// line, since cache state is derived per-request from the session struct).
 		if let Some(session_file) = &self.session.session_file {
+			// Close the previous request's cost/time window before the new one
+			// opens, so `/report` can difference the two. Best-effort: a failed
+			// checkpoint costs a report row's numbers, never the message.
+			if let Err(error) =
+				crate::session::logger::log_stats_checkpoint(session_file, &self.session.info)
+			{
+				log_debug!("Stats checkpoint before user message failed: {}", error);
+			}
 			let message_json = serde_json::to_string(&message)?;
 			crate::session::append_to_session_file(session_file, &message_json)?;
 		}
@@ -320,6 +328,7 @@ impl ChatSession {
 		// This response is owned by a genuine user turn, so a `done` report may
 		// be verified against the task that was just added.
 		self.completion_gate_eligible = true;
+		self.gate_deferred = false;
 		self.steer_attempt = 0;
 		self.steer_last_signal = crate::supervisor::detect::DetectorSignal::None;
 		self.last_steered_calls = None;
@@ -402,7 +411,27 @@ impl ChatSession {
 	pub fn add_system_managed_turn_message(&mut self, content: &str) -> Result<()> {
 		self.add_system_managed_user_message(content)?;
 		self.abandon_turn_timing();
-		self.completion_gate_eligible = false;
+		// A turn that ended with session-owned work in flight hands its open task
+		// to the delivery that resumes it; every other control-plane turn owns none.
+		self.completion_gate_eligible = std::mem::take(&mut self.gate_deferred);
+		Ok(())
+	}
+
+	/// Append a drained inbox batch as ONE externally-triggered turn: the head
+	/// carries the turn semantics, the rest ride along so the model answers
+	/// everything that was ready in a single call instead of one turn each.
+	pub fn add_inbox_batch(&mut self, batch: &[crate::session::inbox::InboxMessage]) -> Result<()> {
+		let Some((head, rest)) = batch.split_first() else {
+			return Ok(());
+		};
+		if head.source.is_system_managed() {
+			self.add_system_managed_turn_message(&head.content)?;
+		} else {
+			self.add_user_message(&head.content)?;
+		}
+		for msg in rest {
+			self.add_system_managed_user_message(&msg.content)?;
+		}
 		Ok(())
 	}
 

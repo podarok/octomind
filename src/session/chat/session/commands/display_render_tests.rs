@@ -224,22 +224,13 @@ fn test_render_usage_signed_in_and_out() {
 	display_usage(&CommandOutput::Usage {
 		signed_in: true,
 		account: Some("dev@example.com".to_string()),
-		windows: vec![
-			UsageWindow {
-				label: "5h".to_string(),
-				spent_usd: 2.5,
-				reserved_usd: Some(0.75),
-				cap_usd: 10.0,
-				resets_at: "2026-08-18T12:00:00Z".to_string(),
-			},
-			UsageWindow {
-				label: "week".to_string(),
-				spent_usd: 40.0,
-				reserved_usd: None,
-				cap_usd: 50.0,
-				resets_at: "2026-08-24T00:00:00Z".to_string(),
-			},
-		],
+		windows: vec![UsageWindow {
+			label: "billing period".to_string(),
+			spent_usd: 16.0,
+			reserved_usd: Some(0.75),
+			allowance_usd: 20.0,
+			resets_at: "2026-08-24T00:00:00Z".to_string(),
+		}],
 		balance_usd: 12.34,
 		storage_gb: 1.5,
 		storage_quota_gb: 10.0,
@@ -289,51 +280,54 @@ fn test_render_login_share_analyze() {
 
 #[test]
 fn test_render_agents_list_and_detail() {
-	display_agents(&CommandOutput::Agents {
-		running: vec![json!({
-			"id": "run-1",
-			"role": "developer",
-			"elapsed_secs": 95,
-			"tokens_input": 12_400,
-			"tokens_output": 850,
-			"cost": 0.0421,
-			"last_action": "editing src/main.rs"
-		})],
-		finished: vec![json!({
-			"id": "run-0",
-			"role": "researcher",
-			"status": "done",
-			"elapsed_secs": 30,
-			"finished_secs_ago": 600,
-			"tokens_input": 3_000_000,
-			"tokens_output": 1_000,
-			"cost": 1.25
-		})],
-		detail: None,
-		total: 2,
+	display_status(&CommandOutput::Status {
+		data: json!({
+			"view": "agents",
+			"running": [json!({
+				"id": "run-1",
+				"role": "developer",
+				"elapsed_secs": 95,
+				"tokens_input": 12_400,
+				"tokens_output": 850,
+				"cost": 0.0421,
+				"last_action": "editing src/main.rs"
+			})],
+			"finished": [json!({
+				"id": "run-0",
+				"role": "researcher",
+				"status": "done",
+				"elapsed_secs": 30,
+				"finished_secs_ago": 600,
+				"tokens_input": 3_000_000,
+				"tokens_output": 1_000,
+				"cost": 1.25
+			})],
+			"detail": null,
+			"total": 2,
+		}),
 	});
-	display_agents(&CommandOutput::Agents {
-		running: Vec::new(),
-		finished: Vec::new(),
-		detail: None,
-		total: 0,
+	display_status(&CommandOutput::Status {
+		data: json!({
+			"view": "agents", "running": [], "finished": [], "detail": null, "total": 0,
+		}),
 	});
-	display_agents(&CommandOutput::Agents {
-		running: Vec::new(),
-		finished: Vec::new(),
-		detail: Some(json!({
-			"id": "run-1",
-			"role": "developer",
-			"status": "failed",
-			"elapsed_secs": 120,
-			"workdir": "/tmp/w",
-			"model": "ollama:fake-model",
-			"tokens_input": 500,
-			"tokens_output": 200,
-			"cost": 0.01,
-			"last_action": "cargo build failed"
-		})),
-		total: 1,
+	display_status(&CommandOutput::Status {
+		data: json!({
+			"view": "agents", "running": [], "finished": [],
+			"detail": json!({
+				"id": "run-1",
+				"role": "developer",
+				"status": "failed",
+				"elapsed_secs": 120,
+				"workdir": "/tmp/w",
+				"model": "ollama:fake-model",
+				"tokens_input": 500,
+				"tokens_output": 200,
+				"cost": 0.01,
+				"last_action": "cargo build failed"
+			}),
+			"total": 1,
+		}),
 	});
 }
 
@@ -402,18 +396,18 @@ fn test_render_report_and_list_tables() {
 }
 
 #[test]
-fn test_render_schedule_and_monitor_arms() {
+fn test_render_schedule_and_status_arms() {
 	display_schedule(&CommandOutput::Schedule {
 		data: json!({"subcommand": "help"}),
 	});
 	display_schedule(&CommandOutput::Schedule {
 		data: json!({"subcommand": "error", "message": "bad when= expression"}),
 	});
-	display_monitor(&CommandOutput::Monitor {
-		data: json!({"subcommand": "error", "message": "no such monitor"}),
+	display_status(&CommandOutput::Status {
+		data: json!({"view": "error", "message": "no such status item"}),
 	});
-	display_monitor(&CommandOutput::Monitor {
-		data: json!({"subcommand": "list", "is_error": false, "message": "No running monitors"}),
+	display_status(&CommandOutput::Status {
+		data: json!({"view": "overview", "active": 0, "agents": [], "jobs": [], "monitors": []}),
 	});
 }
 
@@ -705,9 +699,12 @@ fn test_render_schedule_and_monitor_list_arms() {
 	display_schedule(&CommandOutput::Schedule {
 		data: json!({"subcommand": "add", "is_error": false, "message": "scheduled #3"}),
 	});
-	display_monitor(&CommandOutput::Monitor {
-		data: json!({"subcommand": "list", "is_error": false,
-			"message": "mon-1 running: watching the build log"}),
+	display_status(&CommandOutput::Status {
+		data: json!({"view": "monitors", "active": 1, "monitors": [{
+			"id": "mon-1", "description": "watching the build log", "command": "tail -f build.log",
+			"workdir": "/tmp", "elapsed_secs": 2, "flush_interval_secs": 5,
+			"max_batch_bytes": 4096, "timeout_ms": null
+		}]}),
 	});
 }
 
@@ -893,34 +890,32 @@ fn test_render_list_mid_page_nav_and_plain_text() {
 }
 
 #[test]
-fn test_render_agents_status_and_minimal_detail() {
+fn test_render_status_agents_and_minimal_detail() {
 	// Finished rows carry a status; running rows may lack usage entirely
-	display_agents(&CommandOutput::Agents {
-		running: vec![json!({
-			"id": "r-min",
-			"role": "researcher",
-			"elapsed_secs": 3
-		})],
-		finished: vec![json!({
-			"id": "f-cancel",
-			"role": "developer",
-			"status": "cancelled",
-			"ago_secs": 45
-		})],
-		detail: None,
-		total: 2,
+	display_status(&CommandOutput::Status {
+		data: json!({
+			"view": "agents", "running": [json!({
+				"id": "r-min",
+				"role": "researcher",
+				"elapsed_secs": 3
+			})], "finished": [json!({
+				"id": "f-cancel",
+				"role": "developer",
+				"status": "cancelled",
+				"ago_secs": 45
+			})], "detail": null, "total": 2,
+		}),
 	});
 	// Minimal detail card: no model/tokens/cost/last_action → placeholder text
-	display_agents(&CommandOutput::Agents {
-		running: Vec::new(),
-		finished: Vec::new(),
-		detail: Some(json!({
-			"id": "d-min",
-			"role": "developer",
-			"status": "running",
-			"elapsed_secs": 7
-		})),
-		total: 1,
+	display_status(&CommandOutput::Status {
+		data: json!({
+			"view": "agents", "running": [], "finished": [], "detail": json!({
+				"id": "d-min",
+				"role": "developer",
+				"status": "running",
+				"elapsed_secs": 7
+			}), "total": 1,
+		}),
 	});
 }
 
